@@ -1,5 +1,7 @@
 # TEJAS — Personal AI Assistant
 
+*An Indian AI voice assistant, just like JARVIS.*
+
 TEJAS is a full-stack personal AI assistant with a sci-fi, JARVIS-style holographic interface. It runs entirely on your own machine by default (local LLM via Ollama, local speech-to-text via Whisper, local SQLite/ChromaDB memory), with optional cloud backends (Anthropic Claude, OpenAI Whisper) you can switch on when you want stronger reasoning or accuracy.
 
 It talks back and forth by text or voice, remembers context across sessions, and can actually *do* things — search the web, check the weather, run Python, manage files in a sandbox, and track reminders — via a small, pluggable tool system.
