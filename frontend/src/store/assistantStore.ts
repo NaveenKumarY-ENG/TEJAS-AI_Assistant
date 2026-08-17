@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type CoreState = "idle" | "listening" | "thinking" | "speaking";
+export type CoreState = "idle" | "listening" | "processing" | "thinking" | "searching" | "speaking" | "error";
 export type ConnectionState = "connecting" | "online" | "reconnecting" | "offline";
 
 // A single ordered timeline holds both chat messages and tool-call events,
@@ -100,10 +100,12 @@ export const useAssistantStore = create<AssistantStore>((set) => ({
 
   endStream: () => set({ streamingId: null, coreState: "idle" }),
 
+  // Deliberately does NOT set coreState — the caller (useAssistantSocket's
+  // "tool" WS event handler) decides "thinking" vs "searching" based on
+  // which tool ran, since a hardcoded value here would defeat that.
   pushTool: (name) =>
     set((state) => ({
       timeline: [...state.timeline, { id: nextId(), kind: "tool", name, done: false }],
-      coreState: "thinking",
     })),
 
   resolveTools: () =>

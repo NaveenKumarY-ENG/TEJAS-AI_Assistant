@@ -7,3 +7,6 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 faster-whisper>=1.0.0
 python-multipart>=0.0.9
+
+# Development / testing only
+pytest>=8.0.0

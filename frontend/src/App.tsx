@@ -43,7 +43,7 @@ function Dashboard() {
   const voiceOutputEnabled = useAssistantStore((s) => s.voiceOutputEnabled);
   const toggleVoiceOutput = useAssistantStore((s) => s.toggleVoiceOutput);
   const { message, show } = useToast();
-  const { sendMessage, startNewChat, openSession, stopSpeaking } = useAssistantSocket();
+  const { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef } = useAssistantSocket();
 
   const handleToggleVoiceOutput = () => {
     if (voiceOutputEnabled) stopSpeaking(); // muting mid-reply should cut audio immediately
@@ -59,7 +59,8 @@ function Dashboard() {
       .catch(() => {});
   }, [setMeta]);
 
-  const busy = coreState === "thinking" || coreState === "speaking";
+  const busy =
+    coreState === "thinking" || coreState === "speaking" || coreState === "processing" || coreState === "searching";
   const onSoon = (label: string) => show(`${label} is coming soon`);
   // Voice errors are diagnostic (mic permission, backend unreachable, etc.)
   // and worth actually reading, so they stay up longer than a quick toast.
@@ -85,7 +86,15 @@ function Dashboard() {
                 </div>
                 <ConversationPanel />
                 <div className="px-5 pb-1.5">
-                  <ChatInput disabled={busy} onSend={sendMessage} onSoonClick={onSoon} onVoiceError={onVoiceError} />
+                  <ChatInput
+                    disabled={busy}
+                    coreState={coreState}
+                    ttsBoundaryRef={ttsBoundaryRef}
+                    stopSpeaking={stopSpeaking}
+                    onSend={sendMessage}
+                    onSoonClick={onSoon}
+                    onVoiceError={onVoiceError}
+                  />
                 </div>
                 <p className="pb-3 text-center text-[11px] text-white/30">
                   {assistantName} can make mistakes. Verify important information.
@@ -96,7 +105,7 @@ function Dashboard() {
             <aside className="thin-scroll hidden min-h-0 flex-col gap-3.5 overflow-y-auto pt-1 lg:flex">
               <StatusPanel />
               <WeatherWidget />
-              <RecentSessions onOpenSession={openSession} />
+              <RecentSessions onOpenSession={openSession} onActiveSessionDeleted={startNewChat} />
               <RemindersWidget />
             </aside>
           </div>

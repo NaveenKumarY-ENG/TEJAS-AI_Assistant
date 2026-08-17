@@ -34,8 +34,24 @@ def _get_local_model():
 
 def _transcribe_local(audio_bytes: bytes) -> str:
     model = _get_local_model()
-    segments, _info = model.transcribe(io.BytesIO(audio_bytes), language="en", vad_filter=True)
-    return " ".join(segment.text.strip() for segment in segments).strip()
+    segments, info = model.transcribe(io.BytesIO(audio_bytes), language="en", vad_filter=True)
+    text = " ".join(segment.text.strip() for segment in segments).strip()
+
+    if not text:
+        # The VAD filter can misclassify real mic input (quiet levels,
+        # background noise, a mic's specific frequency response) as
+        # non-speech and strip the whole clip to zero segments - a false
+        # "no speech" is worse than the filter's noise-reduction benefit,
+        # so retry once without it before giving up.
+        logger.warning(
+            "VAD-filtered transcription came back empty (%.2fs of audio) - retrying without VAD filter",
+            info.duration,
+        )
+        segments, info = model.transcribe(io.BytesIO(audio_bytes), language="en", vad_filter=False)
+        text = " ".join(segment.text.strip() for segment in segments).strip()
+
+    logger.info("Transcribed %.2fs of audio -> %d char(s)", info.duration, len(text))
+    return text
 
 
 def _transcribe_openai(audio_bytes: bytes) -> str:

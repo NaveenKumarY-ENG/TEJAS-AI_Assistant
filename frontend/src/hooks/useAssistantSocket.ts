@@ -2,6 +2,13 @@ import { useCallback, useEffect, useRef } from "react";
 import { useAssistantStore } from "../store/assistantStore";
 import { useSpeechSynthesis } from "./useSpeechSynthesis";
 import { extractCompleteSentences } from "../utils/text";
+import {
+  ERROR_DISPLAY_MS,
+  RECONNECT_BASE_MS,
+  RECONNECT_FACTOR,
+  RECONNECT_JITTER_MS,
+  RECONNECT_MAX_MS,
+} from "../constants/voice";
 
 type ServerEvent =
   | { type: "ready"; session_id: number; history: Array<{ role: string; content: string }> }
@@ -34,6 +41,14 @@ export function useAssistantSocket() {
   const socketRef = useRef<WebSocket | null>(null);
   const streamIdRef = useRef<string | null>(null);
   const reconnectTimer = useRef<number | null>(null);
+  // Exponential backoff attempt counter — resets to 0 on a successful open
+  // or a deliberate session switch, so an unrelated later network blip
+  // doesn't inherit a long delay from an earlier outage.
+  const reconnectAttemptRef = useRef(0);
+  // Auto-clears coreState:"error" back to "idle" after ERROR_DISPLAY_MS —
+  // tracked so a stale timer can't stomp a legitimate later state if the
+  // user starts a new turn while the error is still showing.
+  const errorClearTimer = useRef<number | null>(null);
   // The session currently open in this tab. Undefined means "not established
   // yet" (first connect); null means "force a brand new session".
   const activeSessionIdRef = useRef<number | null | undefined>(undefined);
@@ -62,7 +77,19 @@ export function useAssistantSocket() {
     endStream();
   }, [endStream]);
 
-  const { enqueue: speakText, stop: stopSpeakingRaw, supported: ttsSupported } = useSpeechSynthesis(() => {
+  const clearPendingErrorState = useCallback(() => {
+    if (errorClearTimer.current) {
+      window.clearTimeout(errorClearTimer.current);
+      errorClearTimer.current = null;
+    }
+  }, []);
+
+  const {
+    enqueue: speakText,
+    stop: stopSpeakingRaw,
+    supported: ttsSupported,
+    boundaryRef: ttsBoundaryRef,
+  } = useSpeechSynthesis(() => {
     if (awaitingSpeechEndRef.current) {
       awaitingSpeechEndRef.current = false;
       finishStream();
@@ -70,9 +97,24 @@ export function useAssistantSocket() {
   });
 
   const stopSpeaking = useCallback(() => {
+    // Cancelling the CURRENT utterance isn't enough on its own: the backend
+    // keeps streaming the rest of this turn's reply regardless of whether
+    // we muted, and speakRepliesRef gated whether each new "chunk" event
+    // gets spoken. Without resetting it here, every sentence that finishes
+    // streaming AFTER this call still gets enqueued and spoken — the mute
+    // silences what's playing right now but not what arrives next.
+    const wasAwaitingSpeechEnd = awaitingSpeechEndRef.current;
     awaitingSpeechEndRef.current = false;
+    speakRepliesRef.current = false;
+    speechBufferRef.current = "";
+    spokeAnythingRef.current = false;
     stopSpeakingRaw();
-  }, [stopSpeakingRaw]);
+    // If we were deferring finishStream() until the speech queue drained
+    // naturally (see the "done" case below), a manual stop() never fires
+    // that drain callback — finish it now so coreState doesn't stay stuck
+    // on "speaking" forever.
+    if (wasAwaitingSpeechEnd) finishStream();
+  }, [stopSpeakingRaw, finishStream]);
 
   const connect = useCallback(
     (sessionOverride?: number | null) => {
@@ -83,12 +125,18 @@ export function useAssistantSocket() {
       const socket = new WebSocket(`${proto}://${location.host}/ws${query}`);
       socketRef.current = socket;
 
-      socket.onopen = () => setConnection("online");
+      socket.onopen = () => {
+        setConnection("online");
+        reconnectAttemptRef.current = 0;
+      };
 
       socket.onclose = () => {
         setConnection("reconnecting");
         setCoreState("idle");
-        reconnectTimer.current = window.setTimeout(() => connect(), 2000);
+        const attempt = reconnectAttemptRef.current;
+        const backoff = Math.min(RECONNECT_BASE_MS * RECONNECT_FACTOR ** attempt, RECONNECT_MAX_MS);
+        reconnectAttemptRef.current = attempt + 1;
+        reconnectTimer.current = window.setTimeout(() => connect(), backoff + Math.random() * RECONNECT_JITTER_MS);
       };
 
       socket.onerror = () => setConnection("offline");
@@ -106,6 +154,9 @@ export function useAssistantSocket() {
           case "tool":
             resolveTools();
             pushTool(msg.name);
+            // web_search is the one tool worth a distinct HUD state; the
+            // exact string is coupled to tools/web_search.py's `name`.
+            setCoreState(msg.name === "web_search" ? "searching" : "thinking");
             break;
 
           case "chunk":
@@ -159,6 +210,11 @@ export function useAssistantSocket() {
             if (!streamIdRef.current) streamIdRef.current = beginAssistantStream();
             appendToStream(streamIdRef.current, `\n\n${msg.message}`);
             finishStream();
+            // Additive to the inline chat text above — also flips the HUD
+            // to a distinct red "error" state, auto-clearing back to idle.
+            clearPendingErrorState();
+            setCoreState("error");
+            errorClearTimer.current = window.setTimeout(() => setCoreState("idle"), ERROR_DISPLAY_MS);
             break;
         }
       };
@@ -166,6 +222,7 @@ export function useAssistantSocket() {
     [
       appendToStream,
       beginAssistantStream,
+      clearPendingErrorState,
       finishStream,
       hydrateHistory,
       pushTool,
@@ -183,6 +240,7 @@ export function useAssistantSocket() {
     connect(null); // fresh session on page load, never auto-resume
     return () => {
       if (reconnectTimer.current) window.clearTimeout(reconnectTimer.current);
+      clearPendingErrorState();
       stopSpeaking();
       socketRef.current?.close();
     };
@@ -192,6 +250,8 @@ export function useAssistantSocket() {
   const switchTo = useCallback(
     (sessionOverride: number | null) => {
       if (reconnectTimer.current) window.clearTimeout(reconnectTimer.current);
+      reconnectAttemptRef.current = 0;
+      clearPendingErrorState();
       streamIdRef.current = null;
       stopSpeaking();
       speakRepliesRef.current = false;
@@ -201,7 +261,7 @@ export function useAssistantSocket() {
       socketRef.current?.close();
       connect(sessionOverride);
     },
-    [connect, reset, stopSpeaking]
+    [clearPendingErrorState, connect, reset, stopSpeaking]
   );
 
   const startNewChat = useCallback(() => switchTo(null), [switchTo]);
@@ -212,6 +272,7 @@ export function useAssistantSocket() {
       const trimmed = text.trim();
       if (!trimmed || socketRef.current?.readyState !== WebSocket.OPEN) return false;
 
+      clearPendingErrorState(); // a new turn supersedes any lingering error display
       stopSpeaking(); // interrupt anything still playing from a previous turn
       speakRepliesRef.current = !!opts?.speak;
       speechBufferRef.current = "";
@@ -221,8 +282,8 @@ export function useAssistantSocket() {
       socketRef.current.send(JSON.stringify({ text: trimmed }));
       return true;
     },
-    [addUserMessage, stopSpeaking]
+    [addUserMessage, clearPendingErrorState, stopSpeaking]
   );
 
-  return { sendMessage, startNewChat, openSession, stopSpeaking };
+  return { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef };
 }

@@ -26,7 +26,7 @@ export function HUDGlyphs({ count = 22, coreState }: { count?: number; coreState
     [count]
   );
 
-  const active = coreState === "thinking" || coreState === "speaking";
+  const active = coreState === "thinking" || coreState === "speaking" || coreState === "searching";
 
   return (
     <div className="pointer-events-none absolute inset-0" aria-hidden="true">

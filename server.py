@@ -66,6 +66,14 @@ async def sessions():
     return {"sessions": structured.list_sessions(limit=20)}
 
 
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: int):
+    deleted = structured.delete_session(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"deleted": session_id}
+
+
 @app.get("/api/reminders")
 async def reminders():
     return {"reminders": structured.list_reminders()}

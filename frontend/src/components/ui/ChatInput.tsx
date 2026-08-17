@@ -1,17 +1,30 @@
 import { useRef, useState } from "react";
 import { ArrowUp, Keyboard, Paperclip, Camera, SlidersHorizontal } from "lucide-react";
 import { MicButton } from "../voice/MicButton";
+import { VoiceWaveform, type WaveformMode } from "../voice/VoiceWaveform";
 import { useSpeechRecognition } from "../../hooks/useSpeechRecognition";
-import { useAssistantStore } from "../../store/assistantStore";
+import { useAssistantStore, type CoreState } from "../../store/assistantStore";
+import type { TtsBoundarySignal } from "../../hooks/useSpeechSynthesis";
 
 interface ChatInputProps {
   disabled: boolean;
+  coreState: CoreState;
+  ttsBoundaryRef: React.RefObject<TtsBoundarySignal | null>;
+  stopSpeaking: () => void;
   onSend: (text: string, opts?: { speak?: boolean }) => void;
   onSoonClick: (label: string) => void;
   onVoiceError: (message: string) => void;
 }
 
-export function ChatInput({ disabled, onSend, onSoonClick, onVoiceError }: ChatInputProps) {
+export function ChatInput({
+  disabled,
+  coreState,
+  ttsBoundaryRef,
+  stopSpeaking,
+  onSend,
+  onSoonClick,
+  onVoiceError,
+}: ChatInputProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Global mute toggle (TopBar's speaker icon) — TEJAS speaks every reply,
@@ -26,14 +39,50 @@ export function ChatInput({ disabled, onSend, onSoonClick, onVoiceError }: ChatI
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   };
 
+  // Deliberately bypasses the `disabled` guard above: recorder.onstop (set
+  // up inside useSpeechRecognition's start()) permanently closes over
+  // whichever onFinalTranscript reference existed at the moment start() was
+  // called, not a live one. By the time transcription finishes, coreState
+  // has already moved to "processing" (disabled=true) for EVERY voice
+  // submission — so gating on `disabled` here would silently drop voice
+  // messages whenever the click that started recording happened while
+  // disabled was true (e.g. the click-to-interrupt-while-speaking path).
+  // sendMessage() (useAssistantSocket) already guards the real invariant
+  // that matters here (the socket must be open).
+  const submitVoiceText = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    onSend(trimmed, { speak: voiceOutputEnabled });
+  };
+
   // Voice replies auto-submit as soon as transcription completes — the
   // spoken query then shows up as the sent message in the conversation
   // itself, same as a real voice assistant (no extra step of reviewing text
-  // in a box first). Push-to-talk: click the mic to start recording, click
-  // again to stop and transcribe.
-  const { supported, listening, processing, start, stop } = useSpeechRecognition(submitText, onVoiceError);
+  // in a box first). Recording auto-stops on silence (voice activity
+  // detection) or on a manual click of the mic.
+  const { supported, listening, processing, start, stop, analyserRef, revealText } = useSpeechRecognition(
+    submitVoiceText,
+    onVoiceError
+  );
 
   const submit = () => submitText(value);
+
+  // Clicking the mic while TEJAS is speaking interrupts playback and starts
+  // listening immediately, instead of requiring two separate clicks.
+  const handleMicToggle = () => {
+    if (coreState === "speaking") {
+      stopSpeaking();
+      start();
+      return;
+    }
+    if (listening) {
+      stop();
+    } else {
+      start();
+    }
+  };
+
+  const waveformMode: WaveformMode = listening ? "microphone" : coreState === "speaking" ? "tts" : "idle";
 
   return (
     <form
@@ -51,6 +100,11 @@ export function ChatInput({ disabled, onSend, onSoonClick, onVoiceError }: ChatI
       {processing && (
         <div className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/70 px-3.5 py-1.5 text-[12px] text-white/70 backdrop-blur-md">
           Transcribing…
+        </div>
+      )}
+      {!listening && !processing && revealText && (
+        <div className="pointer-events-none absolute -top-10 left-1/2 max-w-[90%] -translate-x-1/2 truncate whitespace-nowrap rounded-full bg-black/70 px-3.5 py-1.5 text-[12px] text-primary backdrop-blur-md animate-[enter_.3s_ease-out]">
+          "{revealText}"
         </div>
       )}
 
@@ -107,11 +161,13 @@ export function ChatInput({ disabled, onSend, onSoonClick, onVoiceError }: ChatI
         <SlidersHorizontal size={16} strokeWidth={1.8} />
       </button>
 
+      <VoiceWaveform mode={waveformMode} analyserRef={analyserRef} boundaryRef={ttsBoundaryRef} className="hidden sm:block" />
+
       <MicButton
         supported={supported}
         listening={listening}
-        disabled={disabled || processing}
-        onToggle={() => (listening ? stop() : start())}
+        disabled={(disabled && coreState !== "speaking") || processing}
+        onToggle={handleMicToggle}
       />
 
       <button

@@ -1,5 +1,14 @@
 import { useCallback, useRef } from "react";
 
+/** Fired on each word/sentence boundary the browser reports while speaking.
+ *  Browser TTS exposes no real audio buffer, so this timing signal is the
+ *  closest approximation available for driving a "TTS mode" waveform —
+ *  it's a cadence approximation, not actual audio amplitude data. */
+export interface TtsBoundarySignal {
+  ts: number;
+  charIndex: number;
+}
+
 /**
  * Thin wrapper over the browser's native SpeechSynthesis API for spoken
  * replies. Text is fed in incrementally (one sentence at a time as it
@@ -14,6 +23,7 @@ export function useSpeechSynthesis(onQueueDrained?: () => void) {
   // referencing it can get garbage-collected mid-speech, silently killing
   // playback. Keeping a live reference here works around it.
   const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const boundaryRef = useRef<TtsBoundarySignal | null>(null);
 
   const speakNext = useCallback(() => {
     if (!supported) return;
@@ -34,6 +44,9 @@ export function useSpeechSynthesis(onQueueDrained?: () => void) {
     utterance.onerror = (event) => {
       console.error("Speech synthesis error:", event.error);
       speakNext();
+    };
+    utterance.onboundary = (event) => {
+      boundaryRef.current = { ts: performance.now(), charIndex: event.charIndex };
     };
 
     currentUtteranceRef.current = utterance;
@@ -56,8 +69,9 @@ export function useSpeechSynthesis(onQueueDrained?: () => void) {
     queueRef.current = [];
     speakingRef.current = false;
     currentUtteranceRef.current = null;
+    boundaryRef.current = null; // don't let a stale pulse linger past an interrupt
     window.speechSynthesis.cancel();
   }, [supported]);
 
-  return { supported, enqueue, stop };
+  return { supported, enqueue, stop, boundaryRef };
 }

@@ -2,20 +2,23 @@ import { Suspense, useRef } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { EnergySphere } from "./EnergySphere";
-import { OrbitalRings } from "./OrbitalRings";
 import { ParticleField } from "./ParticleField";
 import { EnergyArcs } from "./EnergyArcs";
 import { OuterShell } from "./OuterShell";
 import { ScanPulse } from "./ScanPulse";
 import { BackgroundField } from "./BackgroundField";
 import { HUDGlyphs } from "./HUDGlyphs";
+import { HUDStatus } from "./HUDStatus";
 import { type CoreState } from "../../store/assistantStore";
 
 const TARGET_INTENSITY: Record<CoreState, number> = {
   idle: 0.12,
   listening: 0.5,
+  processing: 0.6,
   thinking: 0.95,
+  searching: 0.85,
   speaking: 0.7,
+  error: 0.4,
 };
 
 // Warm energy-core palette (matches the reference hologram image) — kept
@@ -23,7 +26,6 @@ const TARGET_INTENSITY: Record<CoreState, number> = {
 const CORE_COLORS = {
   a: "#ff7a1a",
   b: "#ffd699",
-  c: "#ff5500",
   amber: "#ffb454",
 };
 
@@ -49,7 +51,6 @@ function Scene({ coreState, intensityRef }: { coreState: CoreState; intensityRef
       <BackgroundField />
       <ambientLight intensity={0.12} />
       <EnergySphere intensityRef={intensityRef} colorA={CORE_COLORS.a} colorB={CORE_COLORS.b} />
-      <OrbitalRings intensityRef={intensityRef} colorA={CORE_COLORS.a} colorB={CORE_COLORS.b} colorC={CORE_COLORS.c} />
       <ParticleField intensityRef={intensityRef} color={CORE_COLORS.amber} />
       <EnergyArcs intensityRef={intensityRef} color={CORE_COLORS.b} />
       <OuterShell intensityRef={intensityRef} color={CORE_COLORS.a} />
@@ -89,6 +90,7 @@ export function AssistantCore({ coreState }: { coreState: CoreState }) {
         </Suspense>
       </Canvas>
       <HUDGlyphs coreState={coreState} />
+      <HUDStatus coreState={coreState} />
     </div>
   );
 }
