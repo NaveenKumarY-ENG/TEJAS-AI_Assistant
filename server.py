@@ -1,8 +1,17 @@
 """
-FastAPI server exposing TEJAS over a WebSocket, plus the static web UI.
+FastAPI server exposing TEJAS over a WebSocket, plus the React/Three.js
+dashboard (frontend/).
 
 Run:  uvicorn server:app --reload
 Then: http://127.0.0.1:8000
+
+The dashboard must be built first (`cd frontend && npm install && npm run
+build`) — see README.md. There is deliberately no fallback UI: an older
+plain-HTML version of this app used to live in static/ and get served
+silently whenever frontend/dist was missing, which meant a fresh clone that
+skipped the frontend build looked like a completely different, much older
+app with no explanation why. That fallback has been removed; if the build
+is missing, "/" now returns a clear error instead of a different UI.
 """
 import asyncio
 import json
@@ -10,7 +19,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,11 +36,6 @@ logger = logging.getLogger("assistant.server")
 
 app = FastAPI(title=f"{config.assistant_name} API")
 
-# The React/Three.js dashboard (frontend/) replaced the old static/ single-page
-# UI. In dev, run `npm run dev` inside frontend/ instead — its Vite server
-# proxies /api and /ws to this FastAPI process. This block only serves the
-# built production bundle (`npm run build` in frontend/).
-STATIC_DIR = Path(__file__).parent / "static"
 FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 
 if FRONTEND_DIST.exists():
@@ -45,11 +49,19 @@ if FRONTEND_DIST.exists():
     async def index():
         return FileResponse(FRONTEND_DIST / "index.html")
 else:
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
     @app.get("/")
     async def index():
-        return FileResponse(STATIC_DIR / "index.html")
+        return HTMLResponse(
+            "<pre style='font:14px monospace;padding:2rem;line-height:1.6'>"
+            "frontend/dist not found — the dashboard hasn't been built yet.\n\n"
+            "Run this once:\n"
+            "  cd frontend\n"
+            "  npm install\n"
+            "  npm run build\n\n"
+            "Then restart the server (or refresh, if using --reload).\n"
+            "See README.md for full setup steps.</pre>",
+            status_code=503,
+        )
 
 
 @app.get("/api/meta")

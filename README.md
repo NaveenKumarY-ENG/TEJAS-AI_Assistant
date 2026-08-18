@@ -114,6 +114,8 @@ Then open the URL Vite prints (typically `http://localhost:5173`). The Vite dev 
 
 **Production build** — `npm run build` inside `frontend/` produces `frontend/dist`, which `server.py` serves directly (so you only need to run `uvicorn server:app` and open `http://127.0.0.1:8000`, no separate frontend server needed).
 
+> **On every machine you run this on** (including a fresh `git clone`), you must do one of the two above — either `npm run dev` or `npm run build` — before opening the app. `frontend/dist` is gitignored (it's a build artifact, not source), so it does not exist right after cloning. If you open `http://127.0.0.1:8000` before building, the server now returns a clear "run `npm run build`" message rather than any UI at all — there is no fallback UI to fall back to. (An older, much plainer HTML/CSS/JS prototype used to live in `static/` and get served silently whenever the build was missing, which is why the UI could look completely different across machines — that prototype has been removed for exactly this reason.)
+
 ## Configuration
 
 All settings live in `.env` (copy from `.env.example`). Key ones:
