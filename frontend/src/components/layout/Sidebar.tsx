@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useAssistantStore } from "../../store/assistantStore";
+import { QuickActions } from "../ui/QuickActions";
 
 const NAV_ITEMS = [
   { icon: Home, label: "Home", active: true },
@@ -27,9 +28,13 @@ const NAV_ITEMS = [
 export function Sidebar({
   onSoonClick,
   onNewChat,
+  onQuickAction,
+  quickActionsDisabled,
 }: {
   onSoonClick: (label: string) => void;
   onNewChat: () => void;
+  onQuickAction: (q: string) => void;
+  quickActionsDisabled: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const connection = useAssistantStore((s) => s.connection);
@@ -52,35 +57,46 @@ export function Sidebar({
 
       <div className="mx-4 border-t border-white/[0.08]" />
 
-      <nav className="flex-1 space-y-2 px-3 py-3.5">
-        {NAV_ITEMS.map((item) => (
-          <button
-            key={item.label}
-            type="button"
-            onClick={() => {
-              if (item.action === "newChat") onNewChat();
-              else if (item.soon) onSoonClick(item.label);
-            }}
-            className={`group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-[13px] transition-all ${
-              item.active
-                ? "border-primary/50 bg-primary/10 text-white shadow-[0_0_18px_-6px_rgba(0,229,255,0.6)]"
-                : "border-white/[0.07] bg-white/[0.015] text-white/60 hover:border-primary/30 hover:bg-white/[0.04] hover:text-white/90"
-            }`}
-          >
-            <item.icon
-              size={16}
-              strokeWidth={1.8}
-              className={`shrink-0 ${item.active ? "text-primary" : "text-primary/45 group-hover:text-primary/80"}`}
-            />
-            {!collapsed && <span className="truncate">{item.label}</span>}
-            {!collapsed && item.soon && (
-              <span className="ml-auto rounded-full border border-primary/25 px-1.5 py-0.5 text-[9px] font-medium text-primary/55">
-                Soon
-              </span>
-            )}
-          </button>
-        ))}
-      </nav>
+      <div className="thin-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-3.5">
+        <nav className="space-y-2">
+          {NAV_ITEMS.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={() => {
+                if (item.action === "newChat") onNewChat();
+                else if (item.soon) onSoonClick(item.label);
+              }}
+              className={`group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-[13px] transition-all ${
+                item.active
+                  ? "border-primary/50 bg-primary/10 text-white shadow-[0_0_18px_-6px_rgba(0,229,255,0.6)]"
+                  : "border-white/[0.07] bg-white/[0.015] text-white/60 hover:border-primary/30 hover:bg-white/[0.04] hover:text-white/90"
+              }`}
+            >
+              <item.icon
+                size={16}
+                strokeWidth={1.8}
+                className={`shrink-0 ${item.active ? "text-primary" : "text-primary/45 group-hover:text-primary/80"}`}
+              />
+              {!collapsed && <span className="truncate">{item.label}</span>}
+              {!collapsed && item.soon && (
+                <span className="ml-auto rounded-full border border-primary/25 px-1.5 py-0.5 text-[9px] font-medium text-primary/55">
+                  Soon
+                </span>
+              )}
+            </button>
+          ))}
+        </nav>
+
+        <div className="border-t border-white/[0.08] pt-4">
+          {!collapsed && (
+            <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wider text-white/45">
+              Quick Actions
+            </div>
+          )}
+          <QuickActions onPick={onQuickAction} disabled={quickActionsDisabled} collapsed={collapsed} />
+        </div>
+      </div>
 
       <div className="border-t border-white/[0.08] p-3">
         <div className="flex items-center gap-2.5 rounded-xl border border-white/[0.08] bg-white/[0.02] px-2.5 py-2">

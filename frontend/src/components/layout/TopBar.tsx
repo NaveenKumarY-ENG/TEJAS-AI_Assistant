@@ -1,6 +1,7 @@
 import { Bell, Volume2, VolumeX } from "lucide-react";
 import { useMemo } from "react";
 import { useAssistantStore } from "../../store/assistantStore";
+import { ModelSelector } from "../ui/ModelSelector";
 
 function useGreeting() {
   return useMemo(() => {
@@ -17,10 +18,12 @@ export function TopBar({
   onSoonClick,
   voiceOutputEnabled,
   onToggleVoiceOutput,
+  onModelError,
 }: {
   onSoonClick: (label: string) => void;
   voiceOutputEnabled: boolean;
   onToggleVoiceOutput: () => void;
+  onModelError: (message: string) => void;
 }) {
   const greeting = useGreeting();
   const assistantName = useAssistantStore((s) => s.assistantName);
@@ -35,6 +38,8 @@ export function TopBar({
       </div>
 
       <div className="flex items-center gap-2.5">
+        <ModelSelector onError={onModelError} />
+
         <button
           type="button"
           onClick={onToggleVoiceOutput}

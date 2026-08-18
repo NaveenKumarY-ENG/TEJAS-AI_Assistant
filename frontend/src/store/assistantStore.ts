@@ -3,6 +3,13 @@ import { create } from "zustand";
 export type CoreState = "idle" | "listening" | "processing" | "thinking" | "searching" | "speaking" | "error";
 export type ConnectionState = "connecting" | "online" | "reconnecting" | "offline";
 
+export interface ModelOption {
+  id: string;
+  provider: string;
+  model: string;
+  label: string;
+}
+
 // A single ordered timeline holds both chat messages and tool-call events,
 // interleaved in the order they actually happened — a tool call from turn 1
 // stays visible in history rather than being wiped once that turn's reply
@@ -17,6 +24,8 @@ interface AssistantStore {
   sessionId: number | null;
   assistantName: string;
   model: string;
+  modelId: string;
+  availableModels: ModelOption[];
   toolCount: number;
   timeline: TimelineEntry[];
   streamingId: string | null;
@@ -29,6 +38,8 @@ interface AssistantStore {
   setConnection: (c: ConnectionState) => void;
   setSession: (id: number) => void;
   setMeta: (meta: { assistantName?: string; model?: string; toolCount?: number }) => void;
+  setModels: (models: ModelOption[], activeId: string) => void;
+  setActiveModel: (id: string, model: string) => void;
   hydrateHistory: (msgs: Array<{ role: string; content: string }>) => void;
   addUserMessage: (text: string) => void;
   beginAssistantStream: () => string;
@@ -49,6 +60,8 @@ export const useAssistantStore = create<AssistantStore>((set) => ({
   sessionId: null,
   assistantName: "Tejas",
   model: "",
+  modelId: "",
+  availableModels: [],
   toolCount: 0,
   timeline: [],
   streamingId: null,
@@ -63,6 +76,8 @@ export const useAssistantStore = create<AssistantStore>((set) => ({
       model: meta.model ?? state.model,
       toolCount: meta.toolCount ?? state.toolCount,
     })),
+  setModels: (models, activeId) => set({ availableModels: models, modelId: activeId }),
+  setActiveModel: (id, model) => set({ modelId: id, model }),
 
   hydrateHistory: (msgs) =>
     set({

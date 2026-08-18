@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { Sidebar } from "./components/layout/Sidebar";
 import { TopBar } from "./components/layout/TopBar";
 import { AssistantCore } from "./components/core/AssistantCore";
-import { QuickActions } from "./components/ui/QuickActions";
 import { ConversationPanel } from "./components/ui/ConversationPanel";
 import { ChatInput } from "./components/ui/ChatInput";
 import { StatusPanel } from "./components/ui/StatusPanel";
@@ -40,6 +39,7 @@ function Dashboard() {
   const coreState = useAssistantStore((s) => s.coreState);
   const assistantName = useAssistantStore((s) => s.assistantName);
   const setMeta = useAssistantStore((s) => s.setMeta);
+  const setModels = useAssistantStore((s) => s.setModels);
   const voiceOutputEnabled = useAssistantStore((s) => s.voiceOutputEnabled);
   const toggleVoiceOutput = useAssistantStore((s) => s.toggleVoiceOutput);
   const { message, show } = useToast();
@@ -57,7 +57,11 @@ function Dashboard() {
         setMeta({ assistantName: m.assistant_name, model: m.model, toolCount: m.tools?.length ?? 0 })
       )
       .catch(() => {});
-  }, [setMeta]);
+    fetch("/api/models")
+      .then((r) => r.json())
+      .then((m) => setModels(m.models ?? [], m.active ?? ""))
+      .catch(() => {});
+  }, [setMeta, setModels]);
 
   const busy =
     coreState === "thinking" || coreState === "speaking" || coreState === "processing" || coreState === "searching";
@@ -65,15 +69,26 @@ function Dashboard() {
   // Voice errors are diagnostic (mic permission, backend unreachable, etc.)
   // and worth actually reading, so they stay up longer than a quick toast.
   const onVoiceError = (message: string) => show(message, 5000);
+  const onModelError = (message: string) => show(message, 5000);
 
   return (
     <div className="relative flex h-full">
       <AmbientBackdrop />
       <div className="relative z-10 flex h-full w-full">
-        <Sidebar onSoonClick={onSoon} onNewChat={startNewChat} />
+        <Sidebar
+          onSoonClick={onSoon}
+          onNewChat={startNewChat}
+          onQuickAction={sendMessage}
+          quickActionsDisabled={busy}
+        />
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <TopBar onSoonClick={onSoon} voiceOutputEnabled={voiceOutputEnabled} onToggleVoiceOutput={handleToggleVoiceOutput} />
+          <TopBar
+            onSoonClick={onSoon}
+            voiceOutputEnabled={voiceOutputEnabled}
+            onToggleVoiceOutput={handleToggleVoiceOutput}
+            onModelError={onModelError}
+          />
 
           <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-5 px-6 pb-6 lg:grid-cols-[1fr_300px]">
             <section className="relative min-h-0 overflow-hidden rounded-2xl border border-white/[0.06]">
@@ -81,11 +96,10 @@ function Dashboard() {
               <AssistantCore coreState={coreState} />
 
               <div className="thin-scroll relative z-10 flex h-full min-h-0 flex-col overflow-y-auto">
-                <div className="pt-5">
-                  <QuickActions onPick={sendMessage} disabled={busy} />
-                </div>
-                <ConversationPanel />
-                <div className="px-5 pb-1.5">
+                <p className="pt-5 pb-2 text-center text-[11px] text-white/30">
+                  {assistantName} can make mistakes. Verify important information.
+                </p>
+                <div className="px-5 pb-3">
                   <ChatInput
                     disabled={busy}
                     coreState={coreState}
@@ -96,9 +110,7 @@ function Dashboard() {
                     onVoiceError={onVoiceError}
                   />
                 </div>
-                <p className="pb-3 text-center text-[11px] text-white/30">
-                  {assistantName} can make mistakes. Verify important information.
-                </p>
+                <ConversationPanel />
               </div>
             </section>
 

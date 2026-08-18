@@ -40,25 +40,28 @@ def _get_anthropic_client() -> Anthropic:
 
 def _ollama_chat(messages: list[dict], tools: list[dict]):
     ollama_messages = [{"role": "system", "content": config.formatted_system_prompt()}] + messages
+    kwargs = {"model": config.ollama_model, "messages": ollama_messages, "options": {"temperature": config.llm_temperature}}
+    # Some local models (e.g. gemma2) don't implement Ollama's tool-calling
+    # template at all — passing `tools` makes Ollama reject the request
+    # outright, so it's only included for models flagged as supporting it.
+    if config.active_model_supports_tools:
+        kwargs["tools"] = tools
     logger.debug("Calling Ollama (%s) with %d messages", config.ollama_model, len(ollama_messages))
-    return ollama.chat(
-        model=config.ollama_model,
-        messages=ollama_messages,
-        tools=tools,
-        options={"temperature": config.llm_temperature},
-    )
+    return ollama.chat(**kwargs)
 
 
 def _ollama_chat_streaming(messages: list[dict], tools: list[dict]):
     ollama_messages = [{"role": "system", "content": config.formatted_system_prompt()}] + messages
+    kwargs = {
+        "model": config.ollama_model,
+        "messages": ollama_messages,
+        "stream": True,
+        "options": {"temperature": config.llm_temperature},
+    }
+    if config.active_model_supports_tools:
+        kwargs["tools"] = tools
     logger.debug("Streaming from Ollama (%s) with %d messages", config.ollama_model, len(ollama_messages))
-    return ollama.chat(
-        model=config.ollama_model,
-        messages=ollama_messages,
-        tools=tools,
-        stream=True,
-        options={"temperature": config.llm_temperature},
-    )
+    return ollama.chat(**kwargs)
 
 
 # ----------------------------------------------------------------------

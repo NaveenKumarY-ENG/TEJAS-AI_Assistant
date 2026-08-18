@@ -12,9 +12,10 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from agent import Agent, transcription
-from config import config
+from config import AVAILABLE_MODELS, config
 from memory import structured
 from tools import ALL_TOOLS
 
@@ -59,6 +60,27 @@ async def meta():
         "model": config.active_model,
         "tools": [{"name": t.name, "description": t.description} for t in ALL_TOOLS],
     }
+
+
+class ModelSelection(BaseModel):
+    id: str
+
+
+@app.get("/api/models")
+async def list_models():
+    """Every model the UI can switch to, plus which one is active right now."""
+    return {"models": AVAILABLE_MODELS, "active": config.active_model_id}
+
+
+@app.post("/api/models")
+async def select_model(selection: ModelSelection):
+    """Switch the active LLM — takes effect on the next chat turn, no
+    restart needed (agent/llm_client.py reads config fresh every call)."""
+    try:
+        config.set_active_model(selection.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"active": config.active_model_id, "model": config.active_model}
 
 
 @app.get("/api/sessions")

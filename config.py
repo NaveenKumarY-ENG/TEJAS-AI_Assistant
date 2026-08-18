@@ -15,6 +15,25 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
+# Models selectable at runtime from the UI (see /api/models in server.py).
+# "id" is what the frontend sends back to select one; local Ollama models
+# must already be pulled (`ollama pull <model>`) or the switch will fail at
+# call time with a clear ollama error. The Anthropic entry only works if
+# ANTHROPIC_API_KEY is set — enforced in Config.set_active_model below.
+#
+# "supports_tools": gemma2's Ollama template does not implement tool-calling
+# at all — passing `tools=` to it makes Ollama reject the request outright
+# (400 "does not support tools"), which would crash every single turn.
+# agent/llm_client.py checks this flag and simply omits the tools payload
+# for such models, so they still work as a plain (tool-less) chat model
+# instead of erroring on every message. Confirmed by live testing.
+AVAILABLE_MODELS: list[dict] = [
+    {"id": "ollama:qwen2.5:7b", "provider": "ollama", "model": "qwen2.5:7b", "label": "Qwen 2.5 7B (Local)", "supports_tools": True},
+    {"id": "ollama:llama3.1:latest", "provider": "ollama", "model": "llama3.1:latest", "label": "Llama 3.1 8B (Local)", "supports_tools": True},
+    {"id": "ollama:gemma2:9b", "provider": "ollama", "model": "gemma2:9b", "label": "Gemma 2 9B (Local, no tools)", "supports_tools": False},
+    {"id": "anthropic:claude-sonnet-4-6", "provider": "anthropic", "model": "claude-sonnet-4-6", "label": "Claude Sonnet (Cloud)", "supports_tools": True},
+]
+
 
 @dataclass
 class Config:
@@ -84,18 +103,58 @@ class Config:
         """
         base = self.system_prompt.format(name=self.assistant_name)
         now = datetime.now().strftime("%A, %d %B %Y, %I:%M %p")
-        return (
+        prompt = (
             f"{base}\n\nCurrent date and time: {now} (system local time). "
             "Treat this as ground truth for any question about today's date, "
             "the current time, or the day of the week — never guess or state "
             "a different date. Only use the get_current_datetime tool if the "
             "user asks for the time in a specific different timezone."
         )
+        if not self.active_model_supports_tools:
+            prompt += (
+                "\n\nNote: this model has no tool access right now (no web "
+                "search, code execution, reminders, or file access). Answer "
+                "from your own knowledge, and say plainly when something "
+                "would need a live lookup or tool call you can't perform "
+                "instead of pretending to have done one."
+            )
+        return prompt
 
     @property
     def active_model(self) -> str:
         """The model name actually in use, given the selected provider."""
         return self.model if self.llm_provider == "anthropic" else self.ollama_model
+
+    @property
+    def active_model_id(self) -> str:
+        """Matches an AVAILABLE_MODELS "id" when the active model is one of
+        the presets; otherwise a synthesized id for a custom .env value."""
+        return f"{self.llm_provider}:{self.active_model}"
+
+    @property
+    def active_model_supports_tools(self) -> bool:
+        """True unless the active model is a known preset flagged
+        supports_tools=False (see AVAILABLE_MODELS). Defaults True for a
+        custom/unlisted model, matching this app's behavior before model
+        switching existed."""
+        entry = next((m for m in AVAILABLE_MODELS if m["id"] == self.active_model_id), None)
+        return entry["supports_tools"] if entry else True
+
+    def set_active_model(self, model_id: str) -> None:
+        """Switch models at runtime — read fresh on every LLM call (see
+        agent/llm_client.py), so this takes effect on the very next turn with
+        no restart or reconnect needed."""
+        entry = next((m for m in AVAILABLE_MODELS if m["id"] == model_id), None)
+        if entry is None:
+            raise ValueError(f"Unknown model id: {model_id}")
+        if entry["provider"] == "anthropic" and not self.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY is not set — cannot switch to an Anthropic model.")
+
+        self.llm_provider = entry["provider"]
+        if entry["provider"] == "ollama":
+            self.ollama_model = entry["model"]
+        else:
+            self.model = entry["model"]
 
 
 config = Config()

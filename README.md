@@ -14,8 +14,9 @@ It talks back and forth by text or voice, remembers context across sessions, and
 - **Tool use** — the model can call real tools (web search, weather, date/time, system info, sandboxed file I/O, sandboxed Python execution, reminders, fact memory) instead of guessing.
 - **Session history** — chats persist in SQLite; pick up an old conversation or start a new one, Claude-style.
 - **Semantic memory** — relevant snippets from past conversations are recalled automatically via a ChromaDB vector store (with safeguards so stale, point-in-time facts like "today's weather" never get recalled as if still true).
-- **Dual LLM backends** — local Ollama (free, private) or Anthropic Claude (hosted, stronger tool-calling), switchable via one config value.
+- **Switchable LLM backends** — local Ollama (Qwen 2.5, Llama 3.1, Gemma 2, ...) or Anthropic Claude (hosted, stronger tool-calling), swappable live from a dropdown in the top bar, no restart needed.
 - **Dual STT backends** — local faster-whisper (free, offline) or OpenAI's Whisper API, with automatic fallback to local if the cloud call fails.
+- **Quick actions** — one-click canned prompts (weather, web search, system check, reminders, memory, timezone lookups, quick calculations) in the sidebar for instant access without typing.
 - **A hand-built Three.js hologram** — the "AI Core" visual reacts to the assistant's state (idle / listening / thinking / speaking).
 
 ## Architecture
@@ -168,6 +169,12 @@ Local 7B-class models are noticeably less reliable than hosted models like Claud
 - Point-in-time facts (weather, date/time, system stats) are excluded from long-term semantic memory, so a stale reading never gets recalled later and repeated as if still current.
 
 If you need stronger overall reasoning and tool reliability, switch `LLM_PROVIDER=anthropic` in `.env` (costs money, requires an API key, no local install needed).
+
+### Switching models at runtime
+
+`OLLAMA_MODEL`/`LLM_PROVIDER` in `.env` only set the model active at startup. From there, the model switcher in the top bar of the UI lets you swap between the presets in `AVAILABLE_MODELS` (`config.py`) — currently `qwen2.5:7b`, `llama3.1:latest`, `gemma2:9b`, and Claude — on the fly, no restart or reconnect needed (`GET`/`POST /api/models`). Local models must already be pulled (e.g. `ollama pull llama3.1`); switching to the Anthropic entry requires `ANTHROPIC_API_KEY` to be set.
+
+Not every local model supports Ollama's tool-calling template — `gemma2:9b` doesn't, and would error on every turn if tools were sent to it. Models like this are flagged `"supports_tools": False` in `AVAILABLE_MODELS`, which makes the backend omit the tools payload and adjust the system prompt accordingly: the model still chats normally, it just can't call `web_search`, `execute_python`, reminders, etc. while active. `qwen2.5:7b` and `llama3.1:latest` both support tools fully.
 
 ## Security notes
 
