@@ -12,7 +12,7 @@ It talks back and forth by text or voice, remembers context across sessions, and
 - **Voice input** — click the mic, speak, and it transcribes and sends automatically (local Whisper by default, no cloud dependency).
 - **Voice output** — TEJAS speaks its replies aloud (toggle on/off in the top bar); works for both typed and spoken questions.
 - **Tool use** — the model can call real tools (web search, weather, date/time, system info, sandboxed file I/O, sandboxed Python execution, reminders, fact memory) instead of guessing.
-- **Session history** — chats persist in SQLite; pick up an old conversation or start a new one, Claude-style.
+- **Session history** — chats persist in SQLite; pick up an old conversation, start a new one, or delete one you no longer need, Claude-style.
 - **Semantic memory** — relevant snippets from past conversations are recalled automatically via a ChromaDB vector store (with safeguards so stale, point-in-time facts like "today's weather" never get recalled as if still true).
 - **Switchable LLM backends** — local Ollama (Qwen 2.5, Llama 3.1, Gemma 2, ...) or Anthropic Claude (hosted, stronger tool-calling), swappable live from a dropdown in the top bar, no restart needed.
 - **Dual STT backends** — local faster-whisper (free, offline) or OpenAI's Whisper API, with automatic fallback to local if the cloud call fails.
@@ -34,11 +34,14 @@ Browser (React + Three.js) ⇄ WebSocket /ws ⇄ FastAPI (server.py) ⇄ Agent l
 - **Frontend**: React 19 + TypeScript + Vite, with a Three.js/`@react-three/fiber` hologram rendered full-bleed behind a floating chat UI, styled with Tailwind CSS v4 and state managed by Zustand.
 - **Persistence**: SQLite for chat sessions/messages/reminders/facts (`memory/structured.py`), ChromaDB for semantic recall (`memory/vector.py`).
 
+> The sidebar's Weather widget is **not** wired to the `get_weather` tool — it's an independent client-side fetch straight from Open-Meteo (`WeatherWidget.tsx`), separate from the backend's `tools/weather.py` that the AI calls when you *ask* about weather in chat. Both happen to hit the same free API, but changing one does not affect the other.
+
 ## Project structure
 
 ```
 tejas-assistant/
 ├── server.py                # FastAPI app: WebSocket endpoint + REST endpoints
+├── main.py                  # CLI entry point — text-only terminal chat, no web UI
 ├── config.py                # All settings, loaded from .env
 ├── agent/
 │   ├── loop.py               # Core agent loop: history, tool-calling, streaming, memory
@@ -69,9 +72,11 @@ tejas-assistant/
 
 - Python 3.11+
 - Node.js 18+ (for the frontend)
-- [Ollama](https://ollama.com) installed and running locally, with a model pulled — this is the default LLM backend:
+- [Ollama](https://ollama.com) installed and running locally — this is the default LLM backend. `qwen2.5:7b` is the one active at startup (`OLLAMA_MODEL` in `.env`), but pulling all three lets you use the in-app model switcher (top bar) to swap between them live:
   ```
   ollama pull qwen2.5:7b
+  ollama pull llama3.1
+  ollama pull gemma2:9b
   ```
 
 ## Setup
@@ -116,6 +121,13 @@ Then open the URL Vite prints (typically `http://localhost:5173`). The Vite dev 
 
 > **On every machine you run this on** (including a fresh `git clone`), you must do one of the two above — either `npm run dev` or `npm run build` — before opening the app. `frontend/dist` is gitignored (it's a build artifact, not source), so it does not exist right after cloning. If you open `http://127.0.0.1:8000` before building, the server now returns a clear "run `npm run build`" message rather than any UI at all — there is no fallback UI to fall back to. (An older, much plainer HTML/CSS/JS prototype used to live in `static/` and get served silently whenever the build was missing, which is why the UI could look completely different across machines — that prototype has been removed for exactly this reason.)
 
+**CLI mode** — `main.py` is a separate, text-only terminal interface that talks to the same `Agent` class directly (no server, no browser, no voice):
+```bash
+python main.py            # new session
+python main.py --resume   # continue the most recent session
+python main.py --debug    # also print logs to stdout (always logged to assistant.log)
+```
+
 ## Configuration
 
 All settings live in `.env` (copy from `.env.example`). Key ones:
@@ -149,6 +161,21 @@ The model decides when to call these — it doesn't guess at things it can look 
 | `remember_fact` | Save a fact/preference about you for future recall |
 
 To add a new tool: create a file in `tools/`, subclass `Tool` (see `tools/base.py`), and add one line to `tools/__init__.py`.
+
+## API reference
+
+The frontend talks to `server.py` over one WebSocket plus a handful of REST endpoints — useful if you're scripting against it directly or building a different frontend:
+
+| Endpoint | Purpose |
+|---|---|
+| `WS /ws` | The chat itself. Send `{"text": "..."}`; receive a stream of `{"type": "chunk\|tool\|done\|error", ...}` events. Optional `?session_id=<id>` or `?resume=1` query params pick which session to attach to. |
+| `GET /api/meta` | Assistant name, active model, and the full tool list (name + description) — what the UI header/status panel reads on load. |
+| `GET /api/models` | All models in `AVAILABLE_MODELS` plus which one is currently active. |
+| `POST /api/models` | Switch the active model. Body: `{"id": "<model id from /api/models>"}`. Takes effect on the next chat turn. |
+| `GET /api/sessions` | Recent sessions with message counts, newest first. |
+| `DELETE /api/sessions/{id}` | Delete a session and its messages. 404 if it doesn't exist. |
+| `GET /api/reminders` | Active (not-yet-completed) reminders. |
+| `POST /api/transcribe` | Multipart audio upload (`audio` field) → `{"text": "..."}`. Powers the mic button; also usable standalone. |
 
 ## Testing
 
