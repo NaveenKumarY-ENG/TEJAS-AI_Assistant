@@ -136,18 +136,19 @@ All settings live in `.env` (copy from `.env.example`). Key ones:
 |---|---|---|
 | `LLM_PROVIDER` | `ollama` | `ollama` (local, free) or `anthropic` (hosted, better tool-calling) |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Local model name (must be pulled already) |
+| `OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded after last use. Higher avoids reload cost between messages; see [Performance notes](#performance-notes) |
 | `ANTHROPIC_API_KEY` | — | Required only if `LLM_PROVIDER=anthropic` |
 | `ASSISTANT_MODEL` | `claude-sonnet-4-6` | Anthropic model name |
 | `LLM_TEMPERATURE` | `0.0` | Sampling temperature. Kept at 0 for factual reliability — small local models drift from facts given in the prompt at higher temperatures |
 | `ASSISTANT_NAME` | `TEJAS` | Display name used in the UI and system prompt |
 | `STT_PROVIDER` | `local` | `local` (faster-whisper, offline) or `openai` (Whisper API; auto-falls-back to local on failure) |
-| `WHISPER_MODEL` | `base.en` | Local Whisper model size (`tiny.en` → `medium.en`, bigger = more accurate but slower) |
+| `WHISPER_MODEL` | `small.en` | Local Whisper model size (`tiny.en` → `medium.en`, bigger = more accurate but slower) |
 | `OPENAI_API_KEY` | — | Required only if `STT_PROVIDER=openai` |
 | `SEARCH_API_KEY` | — | Optional. Enables `web_search` (free key at [tavily.com](https://tavily.com)) |
 
 ## Available tools
 
-The model decides when to call these — it doesn't guess at things it can look up:
+The model decides when to call these — it doesn't guess at things it can look up. Kept to 8 tools (not more) deliberately: on CPU-only local inference, every tool in the schema adds real, measured latency to *every* request (see [Performance notes](#performance-notes) below), so related actions are grouped into one tool with an operation/action parameter rather than split into many single-purpose ones.
 
 | Tool | What it does |
 |---|---|
@@ -155,9 +156,9 @@ The model decides when to call these — it doesn't guess at things it can look 
 | `get_weather` | Current weather + 3-day forecast for a city (Open-Meteo, no key needed) |
 | `get_current_datetime` | Date/time in a specific *other* timezone (the local system time is already given to the model directly, so this only covers timezone lookups) |
 | `get_system_info` | Read-only OS/CPU/disk info about the host machine |
-| `read_file` / `write_file` / `list_files` | File I/O confined to a sandbox directory (`data/sandbox/`) — can't touch the rest of your filesystem |
+| `file_ops` | Read, write, or list files in a sandbox directory (`data/sandbox/`) — set `operation` to `read`/`write`/`list`. Can't touch the rest of your filesystem |
 | `execute_python` | Runs a Python snippet in an isolated subprocess with a timeout |
-| `add_reminder` / `list_reminders` / `complete_reminder` | Persisted reminders |
+| `manage_reminders` | Add, list, or complete reminders — set `action` to `add`/`list`/`complete` |
 | `remember_fact` | Save a fact/preference about you for future recall |
 
 To add a new tool: create a file in `tools/`, subclass `Tool` (see `tools/base.py`), and add one line to `tools/__init__.py`.
@@ -205,8 +206,30 @@ If you need stronger overall reasoning and tool reliability, switch `LLM_PROVIDE
 
 Not every local model supports Ollama's tool-calling template — `gemma2:9b` doesn't, and would error on every turn if tools were sent to it. Models like this are flagged `"supports_tools": False` in `AVAILABLE_MODELS`, which makes the backend omit the tools payload and adjust the system prompt accordingly: the model still chats normally, it just can't call `web_search`, `execute_python`, reminders, etc. while active. `qwen2.5:7b` and `llama3.1:latest` both support tools fully.
 
+## Performance notes
+
+On CPU-only hardware (no CUDA/ROCm GPU — the common case on a laptop), local models are slow for a specific, measured reason: **the tool schema sent on every request is the dominant cost, not model size or generation length.** Measured on an i5-1135G7 laptop (4 cores, integrated graphics only) with `qwen2.5:7b`:
+
+| Call | Time |
+|---|---|
+| Cold model load + simple question, no tools | ~14s |
+| Same question, warm, no tools | ~2s |
+| Question, warm, **with** the full tool schema attached | ~42–57s |
+
+That last number looks like it should be a fixed cost paid on every single request — but it isn't. **Ollama caches the KV state for a matching prompt prefix across separate calls**: a byte-identical repeat of the same tool-laden call dropped from 38s to ~4.5s on the 2nd/3rd try, and — more usefully — even a call with the *same system prompt + tools but a different trailing question* still dropped to ~12–15s, because the expensive, mostly-static part (system prompt + ~800 tokens of tool schema) got reused instead of reprocessed.
+
+This app used to defeat that caching on every request without realizing it: the live clock was embedded directly inside the system prompt (`Current date and time: ...`), which changes every call by definition — meaning the "prefix" was never actually identical twice, so Ollama had nothing to reuse. Fixed by splitting it: `config.static_system_prompt()` (tool rules, model capabilities — never changes for a given model) is now the system message on every call, and `config.current_time_context()` (the live clock) is injected per-turn into the outgoing user message instead (`agent/loop.py`'s `_messages_for_llm`, the same non-persisted-enrichment pattern already used for recalled memory context) — so it grounds the model correctly without touching the cacheable prefix.
+
+End-to-end impact, measured through the real app (not a synthetic benchmark) over a 4-turn conversation: response time went **131s → 47s → 31s → 30s** and leveled off there, instead of staying flat around 45–57s on every single turn as it did before. `vector.recall()`'s semantic-memory lookup and the real (longer, multi-paragraph) system prompt mean the real app doesn't hit the ~12–15s floor a stripped-down isolated test did, but the trend — declining then stabilizing, rather than flat — is the real win.
+
+Two other things in this codebase help further:
+- **`OLLAMA_KEEP_ALIVE`** (`.env`, default `30m`) keeps the model loaded in memory between messages so you don't pay the ~10s reload cost on every turn — Ollama's own default is only 5 minutes.
+- **Tool count is kept to 8** (see [Available tools](#available-tools)) instead of one tool per action — `file_ops` and `manage_reminders` each replace what used to be 3 separate tools, cutting the schema payload ~20% and shaving a proportional amount off the one-time cost of populating the cache. Real trade-off: a multi-purpose tool with an `operation`/`action` parameter is marginally harder for a small local model to call correctly than several clearly-named single-purpose tools — verified live against `qwen2.5:7b` before landing (all 4 operations across both consolidated tools called correctly).
+
+None of this changes the fundamental limit: the *first* processing of ~800 tokens of tool schema on a CPU-only 7B model will always take tens of seconds. If that's not acceptable, `LLM_PROVIDER=anthropic` (once you have a valid key) doesn't hit this wall at all — cloud inference processes the same schema in a couple of seconds, every time.
+
 ## Security notes
 
 - Never commit your real `.env` — only `.env.example` (with placeholder values) belongs in version control.
-- `execute_python`, `read_file`, `write_file`, and `list_files` are sandboxed to `data/sandbox/` — they cannot access the rest of your filesystem.
+- `execute_python` and `file_ops` are sandboxed to `data/sandbox/` — they cannot access the rest of your filesystem.
 - `execute_python` runs with a hard timeout and no special privileges beyond the sandbox directory.

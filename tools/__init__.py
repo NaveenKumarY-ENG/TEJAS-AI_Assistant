@@ -7,27 +7,23 @@ from tools.system_info import SystemInfoTool
 from tools.weather import WeatherTool
 from tools.base import Tool
 from tools.code_exec import CodeExecutionTool
-from tools.file_ops import ListFilesTool, ReadFileTool, WriteFileTool
-from tools.memory_tool import (
-    AddReminderTool,
-    CompleteReminderTool,
-    ListRemindersTool,
-    RememberFactTool,
-)
+from tools.file_ops import FileOpsTool
+from tools.memory_tool import RememberFactTool, RemindersTool
 from tools.web_search import WebSearchTool
 
+# Kept to 8 tools (down from 12) — read/write/list files and add/list/
+# complete reminders are each one tool with an operation/action parameter
+# instead of three. On CPU-only local inference every tool in this list adds
+# real, measured prompt-processing latency to every request (see
+# agent/llm_client.py), so tool count directly affects response time.
 ALL_TOOLS: list[Tool] = [
     WebSearchTool(),
     WeatherTool(),
     DateTimeTool(),
     SystemInfoTool(),
-    ReadFileTool(),
-    WriteFileTool(),
-    ListFilesTool(),
+    FileOpsTool(),
     CodeExecutionTool(),
-    AddReminderTool(),
-    ListRemindersTool(),
-    CompleteReminderTool(),
+    RemindersTool(),
     RememberFactTool(),
 ]
 

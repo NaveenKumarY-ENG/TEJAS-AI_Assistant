@@ -9,10 +9,7 @@ from tools.base import Tool
 
 class WeatherTool(Tool):
     name = "get_weather"
-    description = (
-        "Get current weather and a short forecast for a city. "
-        "Prefer this over web_search for weather questions - the data is structured and reliable."
-    )
+    description = "Get current weather + short forecast for a city. Prefer over web_search for weather — more reliable, structured data."
     input_schema = {
         "type": "object",
         "properties": {"city": {"type": "string", "description": "City name, e.g. 'Bengaluru'"}},

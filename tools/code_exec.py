@@ -17,9 +17,8 @@ TIMEOUT_SECONDS = 10
 class CodeExecutionTool(Tool):
     name = "execute_python"
     description = (
-        "Execute a short Python snippet and return its stdout/stderr. "
-        "Use for calculations, data processing, or quick scripts. "
-        f"Runs in an isolated subprocess with a {TIMEOUT_SECONDS}s timeout — no long-running jobs."
+        f"Run a short Python snippet (stdout/stderr returned) for calculations or quick scripts. "
+        f"Isolated subprocess, {TIMEOUT_SECONDS}s timeout."
     )
     input_schema = {
         "type": "object",

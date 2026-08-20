@@ -6,6 +6,15 @@ import { WidgetCard } from "./WidgetCard";
 interface SessionRow {
   id: number;
   message_count: number;
+  title: string | null;
+}
+
+const MAX_TITLE_LENGTH = 34;
+
+function sessionLabel(session: SessionRow): string {
+  if (!session.title) return "New session";
+  const trimmed = session.title.trim().replace(/\s+/g, " ");
+  return trimmed.length > MAX_TITLE_LENGTH ? `${trimmed.slice(0, MAX_TITLE_LENGTH)}…` : trimmed;
 }
 
 interface RecentSessionsProps {
@@ -31,9 +40,10 @@ export function RecentSessions({ onOpenSession, onActiveSessionDeleted }: Recent
     // each turn finishes so message counts stay current.
   }, [activeSessionId, isIdle]);
 
-  const handleDelete = async (id: number, e: React.MouseEvent) => {
+  const handleDelete = async (session: SessionRow, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!window.confirm(`Delete Session #${id}? This can't be undone.`)) return;
+    const id = session.id;
+    if (!window.confirm(`Delete "${sessionLabel(session)}"? This can't be undone.`)) return;
 
     try {
       const res = await fetch(`/api/sessions/${id}`, { method: "DELETE" });
@@ -58,19 +68,20 @@ export function RecentSessions({ onOpenSession, onActiveSessionDeleted }: Recent
                 type="button"
                 onClick={() => onOpenSession(s.id)}
                 disabled={s.id === activeSessionId}
+                title={s.title ?? undefined}
                 className={`flex min-w-0 flex-1 items-center justify-between rounded-xl border px-2.5 py-1.5 text-[12.3px] transition-all ${
                   s.id === activeSessionId
                     ? "border-primary/50 bg-primary/10 text-primary shadow-[0_0_14px_-6px_rgba(0,229,255,0.6)]"
                     : "border-white/[0.07] bg-white/[0.015] text-white/55 hover:border-primary/25 hover:bg-white/[0.04] hover:text-white/85"
                 }`}
               >
-                <span className="truncate">Session #{s.id}</span>
+                <span className={`truncate ${s.title ? "" : "italic text-white/35"}`}>{sessionLabel(s)}</span>
                 <span className="mono ml-2 shrink-0 text-white/35">{s.message_count} msgs</span>
               </button>
               <button
                 type="button"
-                onClick={(e) => handleDelete(s.id, e)}
-                aria-label={`Delete session ${s.id}`}
+                onClick={(e) => handleDelete(s, e)}
+                aria-label={`Delete "${sessionLabel(s)}"`}
                 className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-transparent text-white/25 opacity-0 transition-all hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-400 focus-visible:opacity-100 group-hover:opacity-100"
               >
                 <Trash2 size={13} strokeWidth={1.8} />

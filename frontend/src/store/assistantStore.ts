@@ -33,6 +33,11 @@ interface AssistantStore {
   // input, defaults on so voice interactions feel like talking to an
   // assistant rather than a chat box. Persisted across the tab session only.
   voiceOutputEnabled: boolean;
+  // Text a quick action wants placed in the chat input for the user to
+  // finish and send themselves, rather than sent immediately as-is — e.g.
+  // "Quick calculation" prefills "Calculate " instead of always asking the
+  // same canned example. ChatInput consumes and clears this via an effect.
+  pendingInput: string | null;
 
   setCoreState: (s: CoreState) => void;
   setConnection: (c: ConnectionState) => void;
@@ -48,6 +53,8 @@ interface AssistantStore {
   pushTool: (name: string) => void;
   resolveTools: () => void;
   toggleVoiceOutput: () => void;
+  setPendingInput: (text: string) => void;
+  clearPendingInput: () => void;
   reset: () => void;
 }
 
@@ -66,6 +73,7 @@ export const useAssistantStore = create<AssistantStore>((set) => ({
   timeline: [],
   streamingId: null,
   voiceOutputEnabled: true,
+  pendingInput: null,
 
   setCoreState: (s) => set({ coreState: s }),
   setConnection: (c) => set({ connection: c }),
@@ -129,6 +137,8 @@ export const useAssistantStore = create<AssistantStore>((set) => ({
     })),
 
   toggleVoiceOutput: () => set((state) => ({ voiceOutputEnabled: !state.voiceOutputEnabled })),
+  setPendingInput: (text) => set({ pendingInput: text }),
+  clearPendingInput: () => set({ pendingInput: null }),
 
   reset: () => set({ timeline: [], streamingId: null, coreState: "idle", sessionId: null }),
 }));

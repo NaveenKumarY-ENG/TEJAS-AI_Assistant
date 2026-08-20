@@ -2,16 +2,10 @@ import { Bell, Volume2, VolumeX } from "lucide-react";
 import { useMemo } from "react";
 import { useAssistantStore } from "../../store/assistantStore";
 import { ModelSelector } from "../ui/ModelSelector";
+import { timeOfDayGreeting } from "../../utils/greeting";
 
 function useGreeting() {
-  return useMemo(() => {
-    const h = new Date().getHours();
-    if (h < 5) return "Good night";
-    if (h < 12) return "Good morning";
-    if (h < 17) return "Good afternoon";
-    if (h < 21) return "Good evening";
-    return "Good night";
-  }, []);
+  return useMemo(() => timeOfDayGreeting(), []);
 }
 
 export function TopBar({

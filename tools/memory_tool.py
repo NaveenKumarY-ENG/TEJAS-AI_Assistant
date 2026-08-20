@@ -6,52 +6,48 @@ from memory import structured
 from tools.base import Tool
 
 
-class AddReminderTool(Tool):
-    name = "add_reminder"
-    description = "Save a reminder or task for the user to be recalled later."
+class RemindersTool(Tool):
+    # Add/list/complete are one tool (not three) to keep the per-turn
+    # tool-schema payload smaller — on CPU-only local inference, every tool
+    # in the schema adds real, measured latency to every request (see
+    # agent/llm_client.py), so tool *count* matters, not just description length.
+    name = "manage_reminders"
+    description = "Add, list, or complete reminders. Set action to 'add', 'list', or 'complete'."
     input_schema = {
         "type": "object",
         "properties": {
-            "text": {"type": "string", "description": "What to be reminded of"},
-            "due_at": {"type": "string", "description": "Optional due date/time, ISO format or natural language"},
+            "action": {"type": "string", "enum": ["add", "list", "complete"], "description": "Which action to perform"},
+            "text": {"type": "string", "description": "Reminder text — required when action is 'add'"},
+            "due_at": {"type": "string", "description": "Optional due date/time for 'add', ISO or natural language"},
+            "reminder_id": {"type": "integer", "description": "Reminder ID — required when action is 'complete'"},
         },
-        "required": ["text"],
+        "required": ["action"],
     }
 
-    def run(self, text: str, due_at: str | None = None) -> str:
-        reminder_id = structured.add_reminder(text, due_at)
-        return f"Reminder #{reminder_id} saved: '{text}'" + (f" (due {due_at})" if due_at else "")
-
-
-class ListRemindersTool(Tool):
-    name = "list_reminders"
-    description = "List all active (not yet completed) reminders."
-    input_schema = {"type": "object", "properties": {}, "required": []}
-
-    def run(self) -> str:
-        reminders = structured.list_reminders()
-        if not reminders:
-            return "No active reminders."
-        return "\n".join(f"#{r['id']}: {r['text']}" + (f" (due {r['due_at']})" if r["due_at"] else "") for r in reminders)
-
-
-class CompleteReminderTool(Tool):
-    name = "complete_reminder"
-    description = "Mark a reminder as done, given its ID."
-    input_schema = {
-        "type": "object",
-        "properties": {"reminder_id": {"type": "integer", "description": "The reminder's ID"}},
-        "required": ["reminder_id"],
-    }
-
-    def run(self, reminder_id: int) -> str:
-        ok = structured.complete_reminder(reminder_id)
-        return f"Reminder #{reminder_id} marked done." if ok else f"No reminder found with ID {reminder_id}."
+    def run(self, action: str, text: str | None = None, due_at: str | None = None, reminder_id: int | None = None) -> str:
+        if action == "add":
+            if not text:
+                return "Error: 'text' is required for the 'add' action."
+            new_id = structured.add_reminder(text, due_at)
+            return f"Reminder #{new_id} saved: '{text}'" + (f" (due {due_at})" if due_at else "")
+        if action == "list":
+            reminders = structured.list_reminders()
+            if not reminders:
+                return "No active reminders."
+            return "\n".join(
+                f"#{r['id']}: {r['text']}" + (f" (due {r['due_at']})" if r["due_at"] else "") for r in reminders
+            )
+        if action == "complete":
+            if reminder_id is None:
+                return "Error: 'reminder_id' is required for the 'complete' action."
+            ok = structured.complete_reminder(reminder_id)
+            return f"Reminder #{reminder_id} marked done." if ok else f"No reminder found with ID {reminder_id}."
+        return f"Unknown action '{action}'. Use 'add', 'list', or 'complete'."
 
 
 class RememberFactTool(Tool):
     name = "remember_fact"
-    description = "Store a fact or preference about the user for future reference (e.g. 'favorite_language: Python')."
+    description = "Store a fact/preference about the user for future recall (e.g. 'favorite_language: Python')."
     input_schema = {
         "type": "object",
         "properties": {

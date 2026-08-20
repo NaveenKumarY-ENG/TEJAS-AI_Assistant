@@ -41,3 +41,9 @@ export const RECONNECT_BASE_MS = 1000;
 export const RECONNECT_FACTOR = 2;
 export const RECONNECT_MAX_MS = 30_000;
 export const RECONNECT_JITTER_MS = 250;
+
+/** Delay before the spoken on-load greeting fires, tuned to land roughly
+ * when IntroSequence's reveal animation finishes (dot expands ~2s in, then
+ * the shell + visual greeting fade in) rather than talking before the UI
+ * has visually appeared. */
+export const GREETING_DELAY_MS = 2200;

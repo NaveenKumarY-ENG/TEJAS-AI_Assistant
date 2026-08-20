@@ -8,38 +8,42 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.code_exec import CodeExecutionTool
-from tools.file_ops import ListFilesTool, ReadFileTool, WriteFileTool
+from tools.file_ops import FileOpsTool
 
 
 def test_write_and_read_file():
-    write_tool = WriteFileTool()
-    read_tool = ReadFileTool()
+    tool = FileOpsTool()
 
-    result = write_tool.run(path="test.txt", content="hello world")
+    result = tool.run(operation="write", path="test.txt", content="hello world")
     assert "Wrote" in result
 
-    content = read_tool.run(path="test.txt")
+    content = tool.run(operation="read", path="test.txt")
     assert content == "hello world"
 
 
 def test_read_nonexistent_file():
-    read_tool = ReadFileTool()
-    result = read_tool.run(path="does_not_exist.txt")
+    tool = FileOpsTool()
+    result = tool.run(operation="read", path="does_not_exist.txt")
     assert "not found" in result.lower()
 
 
 def test_sandbox_escape_blocked():
-    write_tool = WriteFileTool()
-    result = write_tool.run(path="../../etc/passwd", content="malicious")
+    tool = FileOpsTool()
+    result = tool.run(operation="write", path="../../etc/passwd", content="malicious")
     assert "escapes the sandbox" in result or "Error" in result
 
 
 def test_list_files():
-    write_tool = WriteFileTool()
-    write_tool.run(path="listed.txt", content="x")
-    list_tool = ListFilesTool()
-    result = list_tool.run()
+    tool = FileOpsTool()
+    tool.run(operation="write", path="listed.txt", content="x")
+    result = tool.run(operation="list")
     assert "listed.txt" in result
+
+
+def test_unknown_file_operation():
+    tool = FileOpsTool()
+    result = tool.run(operation="delete", path="test.txt")
+    assert "Unknown operation" in result
 
 
 def test_code_execution_basic():

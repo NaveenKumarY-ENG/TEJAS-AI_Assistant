@@ -31,9 +31,10 @@ logger = logging.getLogger("assistant.loop")
 # one of these tools are excluded from vector.remember() entirely.
 VOLATILE_TOOLS = {"get_weather", "get_current_datetime", "get_system_info"}
 
-# The current date/time is now grounded directly in the system prompt (see
-# config.formatted_system_prompt), so the model often answers date/weather/
-# system-status questions WITHOUT calling a tool at all — VOLATILE_TOOLS
+# The current date/time is now grounded directly in the outgoing prompt (see
+# config.current_time_context, injected per-turn in _messages_for_llm below),
+# so the model often answers date/weather/system-status questions WITHOUT
+# calling a tool at all — VOLATILE_TOOLS
 # alone would miss those turns. This catches them by the question itself.
 # False positives just mean "skip remembering," a safe failure mode; false
 # negatives are what caused the original bug, so this errs broad.
@@ -110,21 +111,29 @@ class Agent:
 
     def _messages_for_llm(self, user_input: str) -> list[dict]:
         """
-        Build the payload sent to the model: history, with recalled context
-        attached to the latest user turn only.
+        Build the payload sent to the model: history, with the live date/
+        time and any recalled memory context attached to the latest user
+        turn only.
 
-        The returned list is a throwaway copy - self.history is untouched, so
-        the enriched text is never persisted or shown to the user.
+        The returned list is a throwaway copy - self.history is untouched,
+        so the enriched text is never persisted or shown to the user. The
+        live clock lives here rather than in the system prompt (see
+        config.static_system_prompt) specifically so the system prompt
+        stays byte-identical across calls — Ollama caches the KV state for
+        a matching prompt prefix, and reusing that cache (instead of
+        reprocessing the tool schema from scratch every time) cuts real
+        response time roughly 3x, confirmed by direct testing.
         """
+        parts = [config.current_time_context()]
+
         recalled = vector.recall(user_input, n_results=3)
-        if not recalled:
-            return list(self.history)
+        if recalled:
+            parts.append(
+                "Relevant context from past conversations:\n" + "\n".join(f"- {r}" for r in recalled)
+            )
+            logger.debug("Injected %d recalled memories", len(recalled))
 
-        context = "Relevant context from past conversations:\n" + "\n".join(
-            f"- {r}" for r in recalled
-        )
-        logger.debug("Injected %d recalled memories", len(recalled))
-
+        context = "\n\n".join(parts)
         messages = list(self.history[:-1])
         messages.append(
             {"role": "user", "content": f"{context}\n\nUser's message: {user_input}"}

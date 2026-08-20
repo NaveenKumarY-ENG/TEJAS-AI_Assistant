@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Keyboard, Paperclip, Camera, SlidersHorizontal } from "lucide-react";
 import { MicButton } from "../voice/MicButton";
 import { VoiceWaveform, type WaveformMode } from "../voice/VoiceWaveform";
@@ -30,6 +30,28 @@ export function ChatInput({
   // Global mute toggle (TopBar's speaker icon) — TEJAS speaks every reply,
   // typed or voice, unless the user has muted it.
   const voiceOutputEnabled = useAssistantStore((s) => s.voiceOutputEnabled);
+
+  // A sidebar quick action (e.g. "Quick calculation") asked for text to be
+  // placed here for the user to finish, rather than sent immediately — see
+  // QuickActions.tsx's `autoSend: false`. Store-driven since QuickActions
+  // lives in the sidebar, a sibling of this component, not an ancestor.
+  const pendingInput = useAssistantStore((s) => s.pendingInput);
+  const clearPendingInput = useAssistantStore((s) => s.clearPendingInput);
+  useEffect(() => {
+    if (pendingInput === null) return;
+    setValue(pendingInput);
+    clearPendingInput();
+    const el = textareaRef.current;
+    if (!el) return;
+    // React's state update above won't reach the DOM until after this
+    // effect returns, so focus/selection below would otherwise act on the
+    // textarea's stale (pre-update) value — write it directly first.
+    el.value = pendingInput;
+    el.focus();
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+    el.setSelectionRange(pendingInput.length, pendingInput.length);
+  }, [pendingInput, clearPendingInput]);
 
   const submitText = (text: string) => {
     const trimmed = text.trim();

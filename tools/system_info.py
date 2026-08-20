@@ -10,7 +10,7 @@ from tools.base import Tool
 
 class SystemInfoTool(Tool):
     name = "get_system_info"
-    description = "Get information about the computer this assistant is running on - OS, CPU, and disk space."
+    description = "OS/CPU/disk info about the host machine."
     input_schema = {"type": "object", "properties": {}, "required": []}
 
     def run(self) -> str:

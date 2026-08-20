@@ -139,11 +139,16 @@ def get_latest_session() -> int | None:
 
 
 def list_sessions(limit: int = 10) -> list[dict]:
-    """List recent sessions with their message counts - useful for a session picker."""
+    """List recent sessions with their message counts and a title (the
+    first user message, so a session picker can show something recognizable
+    instead of just a raw sequential ID) - useful for a session picker."""
     with _connect() as conn:
         rows = conn.execute(
             """SELECT s.id, s.started_at, s.last_active_at,
-                      COUNT(m.id) AS message_count
+                      COUNT(m.id) AS message_count,
+                      (SELECT content FROM messages
+                       WHERE session_id = s.id AND role = 'user'
+                       ORDER BY id ASC LIMIT 1) AS title
                FROM sessions s
                LEFT JOIN messages m ON m.session_id = s.id
                GROUP BY s.id

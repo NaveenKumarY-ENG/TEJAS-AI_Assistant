@@ -39,8 +39,13 @@ def _get_anthropic_client() -> Anthropic:
 # ----------------------------------------------------------------------
 
 def _ollama_chat(messages: list[dict], tools: list[dict]):
-    ollama_messages = [{"role": "system", "content": config.formatted_system_prompt()}] + messages
-    kwargs = {"model": config.ollama_model, "messages": ollama_messages, "options": {"temperature": config.llm_temperature}}
+    ollama_messages = [{"role": "system", "content": config.static_system_prompt()}] + messages
+    kwargs = {
+        "model": config.ollama_model,
+        "messages": ollama_messages,
+        "options": {"temperature": config.llm_temperature},
+        "keep_alive": config.ollama_keep_alive,
+    }
     # Some local models (e.g. gemma2) don't implement Ollama's tool-calling
     # template at all — passing `tools` makes Ollama reject the request
     # outright, so it's only included for models flagged as supporting it.
@@ -51,12 +56,13 @@ def _ollama_chat(messages: list[dict], tools: list[dict]):
 
 
 def _ollama_chat_streaming(messages: list[dict], tools: list[dict]):
-    ollama_messages = [{"role": "system", "content": config.formatted_system_prompt()}] + messages
+    ollama_messages = [{"role": "system", "content": config.static_system_prompt()}] + messages
     kwargs = {
         "model": config.ollama_model,
         "messages": ollama_messages,
         "stream": True,
         "options": {"temperature": config.llm_temperature},
+        "keep_alive": config.ollama_keep_alive,
     }
     if config.active_model_supports_tools:
         kwargs["tools"] = tools
@@ -163,7 +169,7 @@ def _anthropic_chat(messages: list[dict], tools: list[dict]):
         model=config.model,
         max_tokens=config.max_tokens,
         temperature=config.llm_temperature,
-        system=config.formatted_system_prompt(),
+        system=config.static_system_prompt(),
         messages=_anthropic_messages(messages),
         tools=_anthropic_tools(tools),
     )
@@ -179,7 +185,7 @@ def _anthropic_chat_streaming(messages: list[dict], tools: list[dict]):
             model=config.model,
             max_tokens=config.max_tokens,
             temperature=config.llm_temperature,
-            system=config.formatted_system_prompt(),
+            system=config.static_system_prompt(),
             messages=_anthropic_messages(messages),
             tools=_anthropic_tools(tools),
         ) as stream:

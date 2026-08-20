@@ -267,6 +267,17 @@ export function useAssistantSocket() {
   const startNewChat = useCallback(() => switchTo(null), [switchTo]);
   const openSession = useCallback((id: number) => switchTo(id), [switchTo]);
 
+  // Speaks arbitrary text outside the chat-reply pipeline above — no
+  // coreState changes, no streaming/interrupt bookkeeping, and no mute
+  // check of its own (that's the caller's job, e.g. App.tsx's one-time
+  // greeting on load checks voiceOutputEnabled before calling this).
+  const speak = useCallback(
+    (text: string) => {
+      if (ttsSupported) speakText(text);
+    },
+    [speakText, ttsSupported]
+  );
+
   const sendMessage = useCallback(
     (text: string, opts?: { speak?: boolean }) => {
       const trimmed = text.trim();
@@ -285,5 +296,5 @@ export function useAssistantSocket() {
     [addUserMessage, clearPendingErrorState, stopSpeaking]
   );
 
-  return { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef };
+  return { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef, speak };
 }

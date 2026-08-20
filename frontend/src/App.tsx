@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Sidebar } from "./components/layout/Sidebar";
 import { TopBar } from "./components/layout/TopBar";
 import { AssistantCore } from "./components/core/AssistantCore";
@@ -13,6 +13,8 @@ import { IntroSequence } from "./components/IntroSequence";
 import { useAssistantStore } from "./store/assistantStore";
 import { useAssistantSocket } from "./hooks/useAssistantSocket";
 import { useToast } from "./hooks/useToast";
+import { spokenGreeting } from "./utils/greeting";
+import { GREETING_DELAY_MS } from "./constants/voice";
 
 function AmbientBackdrop() {
   return (
@@ -43,12 +45,31 @@ function Dashboard() {
   const voiceOutputEnabled = useAssistantStore((s) => s.voiceOutputEnabled);
   const toggleVoiceOutput = useAssistantStore((s) => s.toggleVoiceOutput);
   const { message, show } = useToast();
-  const { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef } = useAssistantSocket();
+  const { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef, speak } = useAssistantSocket();
 
   const handleToggleVoiceOutput = () => {
     if (voiceOutputEnabled) stopSpeaking(); // muting mid-reply should cut audio immediately
     toggleVoiceOutput();
   };
+
+  // Spoken once per page load, timed to land when IntroSequence's reveal
+  // animation finishes rather than talking before the UI has appeared. The
+  // ref (not just the empty dep array) is what actually makes this survive
+  // React 18 StrictMode's dev-only double-invoke of effects: the first
+  // schedule's timer gets cancelled by its cleanup almost immediately
+  // (long before GREETING_DELAY_MS elapses), and only the second run's
+  // timer lives long enough to fire — the ref check inside it is a cheap
+  // extra guard against ever firing twice regardless.
+  const hasGreetedRef = useRef(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (hasGreetedRef.current) return;
+      hasGreetedRef.current = true;
+      const { voiceOutputEnabled: canSpeak, assistantName: name } = useAssistantStore.getState();
+      if (canSpeak) speak(spokenGreeting(name));
+    }, GREETING_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [speak]);
 
   useEffect(() => {
     fetch("/api/meta")

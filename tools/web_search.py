@@ -11,7 +11,7 @@ from tools.base import Tool
 
 class WebSearchTool(Tool):
     name = "web_search"
-    description = "Search the web for current information — news, facts, prices, anything not in your training data."
+    description = "Search the web for current info (news, facts, prices) not in your training data."
     input_schema = {
         "type": "object",
         "properties": {"query": {"type": "string", "description": "The search query"}},

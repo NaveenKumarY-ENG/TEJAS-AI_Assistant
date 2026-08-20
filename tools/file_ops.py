@@ -1,6 +1,11 @@
 """
 File operations tool — confined to a sandbox directory so the assistant
 can never read/write/delete arbitrary files on the host machine.
+
+Read/write/list are one tool (not three) to keep the per-turn tool-schema
+payload smaller — on CPU-only local inference, every tool in the schema adds
+real, measured latency to every single request (see llm_client.py), so tool
+*count* matters, not just description length.
 """
 from pathlib import Path
 
@@ -17,16 +22,31 @@ def _safe_path(relative_path: str) -> Path:
     return target
 
 
-class ReadFileTool(Tool):
-    name = "read_file"
-    description = "Read the contents of a text file inside the assistant's sandbox directory."
+class FileOpsTool(Tool):
+    name = "file_ops"
+    description = "Read, write, or list files in the sandbox directory. Set operation to 'read', 'write', or 'list'."
     input_schema = {
         "type": "object",
-        "properties": {"path": {"type": "string", "description": "Relative path to the file"}},
-        "required": ["path"],
+        "properties": {
+            "operation": {"type": "string", "enum": ["read", "write", "list"], "description": "Which action to perform"},
+            "path": {"type": "string", "description": "Relative file/dir path. Optional for 'list' (defaults to root)."},
+            "content": {"type": "string", "description": "Content to write — required when operation is 'write'"},
+        },
+        "required": ["operation"],
     }
 
-    def run(self, path: str) -> str:
+    def run(self, operation: str, path: str = ".", content: str | None = None) -> str:
+        if operation == "read":
+            return self._read(path)
+        if operation == "write":
+            if content is None:
+                return "Error: 'content' is required for the 'write' operation."
+            return self._write(path, content)
+        if operation == "list":
+            return self._list(path)
+        return f"Unknown operation '{operation}'. Use 'read', 'write', or 'list'."
+
+    def _read(self, path: str) -> str:
         try:
             target = _safe_path(path)
             if not target.exists():
@@ -35,20 +55,7 @@ class ReadFileTool(Tool):
         except Exception as e:
             return f"Error reading file: {e}"
 
-
-class WriteFileTool(Tool):
-    name = "write_file"
-    description = "Write text content to a file inside the assistant's sandbox directory. Overwrites if it exists."
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "Relative path to the file"},
-            "content": {"type": "string", "description": "Content to write"},
-        },
-        "required": ["path", "content"],
-    }
-
-    def run(self, path: str, content: str) -> str:
+    def _write(self, path: str, content: str) -> str:
         try:
             target = _safe_path(path)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -57,17 +64,7 @@ class WriteFileTool(Tool):
         except Exception as e:
             return f"Error writing file: {e}"
 
-
-class ListFilesTool(Tool):
-    name = "list_files"
-    description = "List files and folders inside the assistant's sandbox directory."
-    input_schema = {
-        "type": "object",
-        "properties": {"path": {"type": "string", "description": "Relative directory path, default is root"}},
-        "required": [],
-    }
-
-    def run(self, path: str = ".") -> str:
+    def _list(self, path: str) -> str:
         try:
             target = _safe_path(path)
             if not target.exists():

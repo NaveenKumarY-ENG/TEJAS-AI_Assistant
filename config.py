@@ -52,6 +52,12 @@ class Config:
     # deterministic decoding is worth the tradeoff of less "creative"
     # phrasing for an assistant whose job is to be factually reliable.
     llm_temperature: float = field(default_factory=lambda: float(os.getenv("LLM_TEMPERATURE", "0.0")))
+    # How long Ollama keeps a model loaded in memory after the last request.
+    # Ollama's own default is 5 minutes; on CPU-only hardware, reloading a
+    # ~5GB model from disk costs 10+ seconds on top of inference time, so
+    # this keeps it warm for a realistic single-session gap instead of
+    # paying that reload cost on every message.
+    ollama_keep_alive: str = field(default_factory=lambda: os.getenv("OLLAMA_KEEP_ALIVE", "30m"))
     max_tokens: int = 1024
     max_tool_iterations: int = 8  # hard cap to prevent infinite tool-call loops
     max_history_messages: int = 20  # keep last N messages; older ones are dropped
@@ -92,33 +98,51 @@ class Config:
     # --- Safety ---
     sandbox_dir: str = str(DATA_DIR / "sandbox")  # code exec / file ops confined here
 
-    def formatted_system_prompt(self) -> str:
+    def static_system_prompt(self) -> str:
         """
-        Rebuilt fresh on every LLM call (see agent/llm_client.py) so the
-        injected clock is never stale. Small local models are unreliable
-        about actually invoking a tool for "what's today's date" instead of
-        just narrating one from training data — grounding the real time
-        directly in the prompt removes that failure mode entirely, since it
-        no longer depends on the model choosing to call anything.
+        The system prompt with NO live/per-call content mixed in (no clock),
+        so it's byte-identical across every call for a given model/config —
+        confirmed by direct testing that Ollama caches the KV state for a
+        matching prompt prefix across separate requests, and reusing that
+        cache (instead of reprocessing the ~800-token tool schema from
+        scratch every time) cuts real response time roughly 3x. Only
+        changes when the active model's tool support changes (i.e. when the
+        user switches models), which is rare enough not to hurt caching.
+
+        The live clock is injected per-turn instead — see
+        current_time_context() and agent/loop.py's _messages_for_llm,
+        which attaches it to the outgoing user message the same way
+        recalled memory context already is, never to this static prompt.
         """
         base = self.system_prompt.format(name=self.assistant_name)
-        now = datetime.now().strftime("%A, %d %B %Y, %I:%M %p")
-        prompt = (
-            f"{base}\n\nCurrent date and time: {now} (system local time). "
-            "Treat this as ground truth for any question about today's date, "
-            "the current time, or the day of the week — never guess or state "
-            "a different date. Only use the get_current_datetime tool if the "
-            "user asks for the time in a specific different timezone."
-        )
         if not self.active_model_supports_tools:
-            prompt += (
+            base += (
                 "\n\nNote: this model has no tool access right now (no web "
                 "search, code execution, reminders, or file access). Answer "
                 "from your own knowledge, and say plainly when something "
                 "would need a live lookup or tool call you can't perform "
                 "instead of pretending to have done one."
             )
-        return prompt
+        return base
+
+    def current_time_context(self) -> str:
+        """
+        The live date/time grounding, kept separate from the system prompt
+        (see static_system_prompt) so embedding it doesn't defeat Ollama's
+        prompt-prefix cache on every single call. Small local models are
+        unreliable about actually invoking a tool for "what's today's date"
+        instead of just narrating one from training data — grounding the
+        real time directly removes that failure mode, since it no longer
+        depends on the model choosing to call anything.
+        """
+        now = datetime.now().strftime("%A, %d %B %Y, %I:%M %p")
+        return (
+            f"Current date and time: {now} (system local time). "
+            "Treat this as ground truth for any question about today's date, "
+            "the current time, or the day of the week — never guess or state "
+            "a different date. Only use the get_current_datetime tool if the "
+            "user asks for the time in a specific different timezone."
+        )
 
     @property
     def active_model(self) -> str:

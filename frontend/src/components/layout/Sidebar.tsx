@@ -51,7 +51,7 @@ export function Sidebar({
           <span className="relative text-[14px] font-bold text-primary">N</span>
         </div>
         {!collapsed && (
-          <span className="text-sm font-semibold tracking-[0.2em] text-white/90">NEXUS</span>
+          <span className="text-sm font-semibold tracking-[0.2em] text-white/90">NKY.AI</span>
         )}
       </div>
 
