@@ -3,7 +3,8 @@ FastAPI server exposing TEJAS over a WebSocket, plus the React/Three.js
 dashboard (frontend/).
 
 Run:  uvicorn server:app --reload
-Then: http://127.0.0.1:8000
+Then: http://127.0.0.1:8000 (opens automatically in Chrome — set
+      TEJAS_NO_AUTO_OPEN=1 to disable)
 
 The dashboard must be built first (`cd frontend && npm install && npm run
 build`) — see README.md. There is deliberately no fallback UI: an older
@@ -16,6 +17,11 @@ is missing, "/" now returns a clear error instead of a different UI.
 import asyncio
 import json
 import logging
+import os
+import sys
+import tempfile
+import threading
+import webbrowser
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -35,6 +41,90 @@ logging.basicConfig(
 logger = logging.getLogger("assistant.server")
 
 app = FastAPI(title=f"{config.assistant_name} API")
+
+DASHBOARD_URL = "http://127.0.0.1:8000"
+
+
+def _find_chrome() -> str | None:
+    """Best-effort path to a real Chrome executable. Python's stdlib
+    `webbrowser` module can't reliably find Chrome by name on Windows (it has
+    no built-in "chrome" alias there, unlike some Unix setups), so this
+    checks the registry entry Chrome's installer registers, then the two
+    common install locations, before giving up and letting the caller fall
+    back to the OS default browser."""
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+            ) as key:
+                path = winreg.QueryValueEx(key, None)[0]
+                if path and Path(path).exists():
+                    return path
+        except OSError:
+            pass
+        for candidate in (
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ):
+            if Path(candidate).exists():
+                return candidate
+    else:
+        import shutil
+
+        for name in ("google-chrome", "chrome", "chromium"):
+            found = shutil.which(name)
+            if found:
+                return found
+    return None
+
+
+def _open_dashboard_once() -> None:
+    """Opens the dashboard in Chrome when the server starts — but only once
+    per `uvicorn --reload` session, not on every autoreload restart (which
+    would otherwise pop a new tab on every file save).
+
+    `--reload` runs this app in a fresh child process on each restart (see
+    uvicorn's BaseReload.restart), so an in-memory flag here wouldn't survive
+    a restart — but the reloader process that spawns those children keeps
+    the same PID for the whole session, so a temp marker file keyed on
+    os.getppid() correctly recognizes "already opened this session" across
+    restarts, while a genuinely fresh `uvicorn` invocation (new reloader
+    PID) still opens a tab. Set TEJAS_NO_AUTO_OPEN=1 to disable entirely
+    (e.g. headless/CI environments).
+    """
+    if os.environ.get("TEJAS_NO_AUTO_OPEN"):
+        return
+
+    marker = Path(tempfile.gettempdir()) / "tejas_assistant_browser_session.pid"
+    session_pid = str(os.getppid())
+    try:
+        if marker.exists() and marker.read_text().strip() == session_pid:
+            return
+        marker.write_text(session_pid)
+    except OSError:
+        pass  # best-effort — worst case an extra tab opens on a reload
+
+    def _open() -> None:
+        chrome_path = _find_chrome()
+        if chrome_path:
+            try:
+                webbrowser.get(f'"{chrome_path}" %s').open(DASHBOARD_URL)
+                return
+            except webbrowser.Error:
+                pass
+        webbrowser.open(DASHBOARD_URL)  # fall back to whatever the OS default browser is
+
+    # Give uvicorn a moment to actually start accepting connections before
+    # the tab loads — the startup event fires just before that, not after.
+    threading.Timer(1.0, _open).start()
+
+
+@app.on_event("startup")
+async def _launch_browser() -> None:
+    _open_dashboard_once()
 
 FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 

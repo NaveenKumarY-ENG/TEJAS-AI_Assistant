@@ -32,6 +32,7 @@ AVAILABLE_MODELS: list[dict] = [
     {"id": "ollama:llama3.1:latest", "provider": "ollama", "model": "llama3.1:latest", "label": "Llama 3.1 8B (Local)", "supports_tools": True},
     {"id": "ollama:gemma2:9b", "provider": "ollama", "model": "gemma2:9b", "label": "Gemma 2 9B (Local, no tools)", "supports_tools": False},
     {"id": "anthropic:claude-sonnet-4-6", "provider": "anthropic", "model": "claude-sonnet-4-6", "label": "Claude Sonnet (Cloud)", "supports_tools": True},
+    {"id": "gemini:gemini-3.6-flash", "provider": "gemini", "model": "gemini-3.6-flash", "label": "Gemini 3.6 Flash (Cloud)", "supports_tools": True},
 ]
 
 
@@ -44,6 +45,13 @@ class Config:
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
     model: str = field(default_factory=lambda: os.getenv("ASSISTANT_MODEL", "claude-sonnet-4-6"))
     ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen2.5:7b"))
+    # Free tier available with no billing/card required (aistudio.google.com/apikey) —
+    # unlike Anthropic, a good zero-cost bridge to a stronger-than-local model.
+    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    # gemini-3.6-flash (not the newer 3.7) — confirmed live that 3.7-flash's
+    # free tier is capped at just 20 requests/day, too tight for real use;
+    # an older, more established model has more provisioned free-tier capacity.
+    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.6-flash"))
     # Small local models drift away from facts given directly in the system
     # prompt (e.g. inventing a different date than the one just stated) at
     # Ollama's default sampling temperature (~0.8) — confirmed by testing:
@@ -147,7 +155,11 @@ class Config:
     @property
     def active_model(self) -> str:
         """The model name actually in use, given the selected provider."""
-        return self.model if self.llm_provider == "anthropic" else self.ollama_model
+        if self.llm_provider == "anthropic":
+            return self.model
+        if self.llm_provider == "gemini":
+            return self.gemini_model
+        return self.ollama_model
 
     @property
     def active_model_id(self) -> str:
@@ -173,10 +185,14 @@ class Config:
             raise ValueError(f"Unknown model id: {model_id}")
         if entry["provider"] == "anthropic" and not self.anthropic_api_key:
             raise ValueError("ANTHROPIC_API_KEY is not set — cannot switch to an Anthropic model.")
+        if entry["provider"] == "gemini" and not self.gemini_api_key:
+            raise ValueError("GEMINI_API_KEY is not set — cannot switch to a Gemini model.")
 
         self.llm_provider = entry["provider"]
         if entry["provider"] == "ollama":
             self.ollama_model = entry["model"]
+        elif entry["provider"] == "gemini":
+            self.gemini_model = entry["model"]
         else:
             self.model = entry["model"]
 

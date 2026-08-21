@@ -42,7 +42,12 @@ function pickMimeType(): string | undefined {
  * one place (recorder.onstop). The recording is uploaded to /api/transcribe
  * on stop and the resulting text is handed to onFinalTranscript.
  */
-export function useSpeechRecognition(onFinalTranscript: (text: string) => void, onError?: (message: string) => void) {
+export function useSpeechRecognition(
+  onFinalTranscript: (text: string) => void,
+  onError?: (message: string) => void,
+  options?: { vadAutoStop?: boolean }
+) {
+  const vadAutoStop = options?.vadAutoStop ?? VAD_AUTO_STOP_ENABLED;
   const supported =
     typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
   const [listening, setListening] = useState(false);
@@ -220,7 +225,14 @@ export function useSpeechRecognition(onFinalTranscript: (text: string) => void, 
       } finally {
         window.clearTimeout(timeout);
         setProcessing(false);
-        if (!hadError) setCoreState("idle");
+        // Only clear OUR OWN "processing" state — onFinalTranscript (above)
+        // synchronously sends the message and advances coreState to
+        // "thinking", and forcing "idle" unconditionally here would stomp
+        // that if it ever renders in between (currently masked by React's
+        // automatic batching coalescing both updates into one commit, but
+        // fragile — e.g. the first real await added to that send path would
+        // expose it as the mic/HUD flashing "idle" mid-turn).
+        if (!hadError && useAssistantStore.getState().coreState === "processing") setCoreState("idle");
       }
     };
 
@@ -234,7 +246,7 @@ export function useSpeechRecognition(onFinalTranscript: (text: string) => void, 
     // that follows detected speech (so it never fires on the silence before
     // the user starts talking, only after). Gated off by default — see
     // VAD_AUTO_STOP_ENABLED in constants/voice.ts.
-    if (VAD_AUTO_STOP_ENABLED && analyserRef.current) {
+    if (vadAutoStop && analyserRef.current) {
       hasDetectedSpeechRef.current = false;
       lastLoudTsRef.current = performance.now();
       const buffer = new Uint8Array(analyserRef.current.fftSize);
@@ -255,11 +267,37 @@ export function useSpeechRecognition(onFinalTranscript: (text: string) => void, 
       };
       vadFrameRef.current = requestAnimationFrame(watchSilence);
     }
-  }, [supported, listening, processing, onFinalTranscript, enterError, setCoreState, releaseStream, teardownAudio]);
+  }, [supported, listening, processing, onFinalTranscript, enterError, setCoreState, releaseStream, teardownAudio, vadAutoStop]);
 
   const stop = useCallback(() => {
     if (mediaRecorderRef.current?.state === "recording") mediaRecorderRef.current.stop();
   }, []);
 
-  return { supported, listening, processing, interimText: "", start, stop, analyserRef, revealText };
+  // Unlike stop() — which finalizes the recording through the normal
+  // transcribe-and-send pipeline (recorder.onstop) — this discards whatever
+  // was captured so far without transcribing or sending it. Needed for
+  // "leave voice mode mid-sentence" style exits, where stop() would
+  // otherwise still upload and send a half-spoken utterance after the user
+  // has already navigated away.
+  const cancel = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state === "recording") {
+      recorder.onstop = null; // detach before stopping so the transcribe/send pipeline never runs
+      recorder.stop();
+    }
+    releaseStream();
+    teardownAudio();
+    setListening(false);
+    setProcessing(false);
+    // Only clear coreState if it's currently a state THIS hook owns — a
+    // caller (VoiceMode's exit handler) may call cancel() while the
+    // assistant is "thinking"/"searching"/"speaking" from a turn that's
+    // still legitimately in flight in the background, which must be left
+    // alone rather than stomped to "idle" just because voice input is
+    // being torn down.
+    const owned = useAssistantStore.getState().coreState;
+    if (owned === "listening" || owned === "processing") setCoreState("idle");
+  }, [releaseStream, teardownAudio, setCoreState]);
+
+  return { supported, listening, processing, interimText: "", start, stop, cancel, analyserRef, revealText };
 }

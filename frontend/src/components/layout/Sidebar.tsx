@@ -15,9 +15,9 @@ import { useAssistantStore } from "../../store/assistantStore";
 import { QuickActions } from "../ui/QuickActions";
 
 const NAV_ITEMS = [
-  { icon: Home, label: "Home", active: true },
+  { icon: Home, label: "Home" },
   { icon: SquarePen, label: "Chats", action: "newChat" as const },
-  { icon: Mic, label: "Voice", soon: true },
+  { icon: Mic, label: "Voice", action: "voice" as const },
   { icon: BookOpen, label: "Knowledge", soon: true },
   { icon: FolderKanban, label: "Projects", soon: true },
   { icon: Zap, label: "Automation", soon: true },
@@ -28,11 +28,15 @@ const NAV_ITEMS = [
 export function Sidebar({
   onSoonClick,
   onNewChat,
+  onEnterVoice,
+  voiceModeActive,
   onQuickAction,
   quickActionsDisabled,
 }: {
   onSoonClick: (label: string) => void;
   onNewChat: () => void;
+  onEnterVoice: () => void;
+  voiceModeActive: boolean;
   onQuickAction: (q: string) => void;
   quickActionsDisabled: boolean;
 }) {
@@ -59,16 +63,20 @@ export function Sidebar({
 
       <div className="thin-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-3.5">
         <nav className="space-y-2">
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.map((item) => {
+            const isActive =
+              item.label === "Home" ? !voiceModeActive : item.label === "Voice" ? voiceModeActive : false;
+            return (
             <button
               key={item.label}
               type="button"
               onClick={() => {
                 if (item.action === "newChat") onNewChat();
+                else if (item.action === "voice") onEnterVoice();
                 else if (item.soon) onSoonClick(item.label);
               }}
               className={`group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-[13px] transition-all ${
-                item.active
+                isActive
                   ? "border-primary/50 bg-primary/10 text-white shadow-[0_0_18px_-6px_rgba(0,229,255,0.6)]"
                   : "border-white/[0.07] bg-white/[0.015] text-white/60 hover:border-primary/30 hover:bg-white/[0.04] hover:text-white/90"
               }`}
@@ -76,7 +84,7 @@ export function Sidebar({
               <item.icon
                 size={16}
                 strokeWidth={1.8}
-                className={`shrink-0 ${item.active ? "text-primary" : "text-primary/45 group-hover:text-primary/80"}`}
+                className={`shrink-0 ${isActive ? "text-primary" : "text-primary/45 group-hover:text-primary/80"}`}
               />
               {!collapsed && <span className="truncate">{item.label}</span>}
               {!collapsed && item.soon && (
@@ -85,7 +93,8 @@ export function Sidebar({
                 </span>
               )}
             </button>
-          ))}
+            );
+          })}
         </nav>
 
         <div className="border-t border-white/[0.08] pt-4">

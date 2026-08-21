@@ -14,7 +14,7 @@ It talks back and forth by text or voice, remembers context across sessions, and
 - **Tool use** — the model can call real tools (web search, weather, date/time, system info, sandboxed file I/O, sandboxed Python execution, reminders, fact memory) instead of guessing.
 - **Session history** — chats persist in SQLite; pick up an old conversation, start a new one, or delete one you no longer need, Claude-style.
 - **Semantic memory** — relevant snippets from past conversations are recalled automatically via a ChromaDB vector store (with safeguards so stale, point-in-time facts like "today's weather" never get recalled as if still true).
-- **Switchable LLM backends** — local Ollama (Qwen 2.5, Llama 3.1, Gemma 2, ...) or Anthropic Claude (hosted, stronger tool-calling), swappable live from a dropdown in the top bar, no restart needed.
+- **Switchable LLM backends** — local Ollama (Qwen 2.5, Llama 3.1, Gemma 2, ...), Anthropic Claude, or Google Gemini (hosted, stronger tool-calling; Gemini has a free tier with no billing/card required), swappable live from a dropdown in the top bar, no restart needed.
 - **Dual STT backends** — local faster-whisper (free, offline) or OpenAI's Whisper API, with automatic fallback to local if the cloud call fails.
 - **Quick actions** — one-click canned prompts (weather, web search, system check, reminders, memory, timezone lookups, quick calculations) in the sidebar for instant access without typing.
 - **A hand-built Three.js hologram** — the "AI Core" visual reacts to the assistant's state (idle / listening / thinking / speaking).
@@ -134,11 +134,13 @@ All settings live in `.env` (copy from `.env.example`). Key ones:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LLM_PROVIDER` | `ollama` | `ollama` (local, free) or `anthropic` (hosted, better tool-calling) |
+| `LLM_PROVIDER` | `ollama` | `ollama` (local, free), `anthropic` (hosted, better tool-calling), or `gemini` (hosted, free tier available) |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Local model name (must be pulled already) |
 | `OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded after last use. Higher avoids reload cost between messages; see [Performance notes](#performance-notes) |
 | `ANTHROPIC_API_KEY` | — | Required only if `LLM_PROVIDER=anthropic` |
 | `ASSISTANT_MODEL` | `claude-sonnet-4-6` | Anthropic model name |
+| `GEMINI_API_KEY` | — | Required only if `LLM_PROVIDER=gemini`. Free, no billing needed: [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Gemini model name. `gemini-2.5-flash` has been retired for new API keys (Google's own 404 points to `gemini-3.6-flash` as the replacement). Confirmed live: `gemini-3.7-flash`'s free tier caps out at just 20 requests/day (`RESOURCE_EXHAUSTED`) — heavy testing exhausted the daily quota on `gemini-3.6-flash` too, so treat any Gemini free-tier quota as tight for now, not just the newest model |
 | `LLM_TEMPERATURE` | `0.0` | Sampling temperature. Kept at 0 for factual reliability — small local models drift from facts given in the prompt at higher temperatures |
 | `ASSISTANT_NAME` | `TEJAS` | Display name used in the UI and system prompt |
 | `STT_PROVIDER` | `local` | `local` (faster-whisper, offline) or `openai` (Whisper API; auto-falls-back to local on failure) |
@@ -198,11 +200,11 @@ Local 7B-class models are noticeably less reliable than hosted models like Claud
 - The current date/time is injected directly into the system prompt every request (not left to the model to "know" or fetch), and sampling temperature is kept at 0 so the model doesn't drift off given facts.
 - Point-in-time facts (weather, date/time, system stats) are excluded from long-term semantic memory, so a stale reading never gets recalled later and repeated as if still current.
 
-If you need stronger overall reasoning and tool reliability, switch `LLM_PROVIDER=anthropic` in `.env` (costs money, requires an API key, no local install needed).
+If you need stronger overall reasoning and tool reliability, switch `LLM_PROVIDER=anthropic` (costs money) or `LLM_PROVIDER=gemini` (free tier, no billing required) in `.env` — no local install needed either way.
 
 ### Switching models at runtime
 
-`OLLAMA_MODEL`/`LLM_PROVIDER` in `.env` only set the model active at startup. From there, the model switcher in the top bar of the UI lets you swap between the presets in `AVAILABLE_MODELS` (`config.py`) — currently `qwen2.5:7b`, `llama3.1:latest`, `gemma2:9b`, and Claude — on the fly, no restart or reconnect needed (`GET`/`POST /api/models`). Local models must already be pulled (e.g. `ollama pull llama3.1`); switching to the Anthropic entry requires `ANTHROPIC_API_KEY` to be set.
+`OLLAMA_MODEL`/`LLM_PROVIDER` in `.env` only set the model active at startup. From there, the model switcher in the top bar of the UI lets you swap between the presets in `AVAILABLE_MODELS` (`config.py`) — currently `qwen2.5:7b`, `llama3.1:latest`, `gemma2:9b`, Claude, and Gemini — on the fly, no restart or reconnect needed (`GET`/`POST /api/models`). Local models must already be pulled (e.g. `ollama pull llama3.1`); switching to the Anthropic or Gemini entry requires the matching API key to be set.
 
 Not every local model supports Ollama's tool-calling template — `gemma2:9b` doesn't, and would error on every turn if tools were sent to it. Models like this are flagged `"supports_tools": False` in `AVAILABLE_MODELS`, which makes the backend omit the tools payload and adjust the system prompt accordingly: the model still chats normally, it just can't call `web_search`, `execute_python`, reminders, etc. while active. `qwen2.5:7b` and `llama3.1:latest` both support tools fully.
 
@@ -226,7 +228,7 @@ Two other things in this codebase help further:
 - **`OLLAMA_KEEP_ALIVE`** (`.env`, default `30m`) keeps the model loaded in memory between messages so you don't pay the ~10s reload cost on every turn — Ollama's own default is only 5 minutes.
 - **Tool count is kept to 8** (see [Available tools](#available-tools)) instead of one tool per action — `file_ops` and `manage_reminders` each replace what used to be 3 separate tools, cutting the schema payload ~20% and shaving a proportional amount off the one-time cost of populating the cache. Real trade-off: a multi-purpose tool with an `operation`/`action` parameter is marginally harder for a small local model to call correctly than several clearly-named single-purpose tools — verified live against `qwen2.5:7b` before landing (all 4 operations across both consolidated tools called correctly).
 
-None of this changes the fundamental limit: the *first* processing of ~800 tokens of tool schema on a CPU-only 7B model will always take tens of seconds. If that's not acceptable, `LLM_PROVIDER=anthropic` (once you have a valid key) doesn't hit this wall at all — cloud inference processes the same schema in a couple of seconds, every time.
+None of this changes the fundamental limit: the *first* processing of ~800 tokens of tool schema on a CPU-only 7B model will always take tens of seconds. If that's not acceptable, `LLM_PROVIDER=anthropic` or `LLM_PROVIDER=gemini` (the latter free, no billing required) don't hit this wall at all — cloud inference processes the same schema in a couple of seconds, every time.
 
 ## Security notes
 

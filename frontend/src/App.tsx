@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Sidebar } from "./components/layout/Sidebar";
 import { TopBar } from "./components/layout/TopBar";
 import { AssistantCore } from "./components/core/AssistantCore";
@@ -10,6 +10,7 @@ import { RecentSessions } from "./components/ui/RecentSessions";
 import { RemindersWidget } from "./components/ui/RemindersWidget";
 import { Toast } from "./components/ui/Toast";
 import { IntroSequence } from "./components/IntroSequence";
+import { VoiceMode } from "./components/voice/VoiceMode";
 import { useAssistantStore } from "./store/assistantStore";
 import { useAssistantSocket } from "./hooks/useAssistantSocket";
 import { useToast } from "./hooks/useToast";
@@ -46,6 +47,7 @@ function Dashboard() {
   const toggleVoiceOutput = useAssistantStore((s) => s.toggleVoiceOutput);
   const { message, show } = useToast();
   const { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef, speak } = useAssistantSocket();
+  const [voiceModeActive, setVoiceModeActive] = useState(false);
 
   const handleToggleVoiceOutput = () => {
     if (voiceOutputEnabled) stopSpeaking(); // muting mid-reply should cut audio immediately
@@ -99,6 +101,8 @@ function Dashboard() {
         <Sidebar
           onSoonClick={onSoon}
           onNewChat={startNewChat}
+          onEnterVoice={() => setVoiceModeActive(true)}
+          voiceModeActive={voiceModeActive}
           onQuickAction={sendMessage}
           quickActionsDisabled={busy}
         />
@@ -146,6 +150,16 @@ function Dashboard() {
       </div>
 
       <Toast message={message} />
+
+      {voiceModeActive && (
+        <VoiceMode
+          coreState={coreState}
+          onSend={sendMessage}
+          stopSpeaking={stopSpeaking}
+          ttsBoundaryRef={ttsBoundaryRef}
+          onExit={() => setVoiceModeActive(false)}
+        />
+      )}
     </div>
   );
 }
