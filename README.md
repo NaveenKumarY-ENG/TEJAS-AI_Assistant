@@ -97,6 +97,8 @@ Edit `.env` as needed (see [Configuration](#configuration) below) — the defaul
 
 **2. Frontend**
 
+`frontend/dist` (the built UI) is committed to the repo, so **you can skip this step entirely** if you just want to run the app — `uvicorn server:app --reload` alone is enough, no Node/npm required at all. Only do this if you plan to modify the frontend:
+
 ```bash
 cd frontend
 npm install
@@ -119,11 +121,11 @@ npm run dev
 
 Then open the URL Vite prints (typically `http://localhost:5173`). The Vite dev server proxies `/api` and `/ws` to the FastAPI backend on port 8000.
 
-**Production build** — `npm run build` inside `frontend/` produces `frontend/dist`, which `server.py` serves directly (so you only need to run `uvicorn server:app` and open `http://127.0.0.1:8000`, no separate frontend server needed).
+**Production build** — `frontend/dist` (what `server.py` serves directly at `http://127.0.0.1:8000`, no separate frontend server needed) is committed to the repo and kept up to date with source. You only need to rebuild it yourself (`npm run build` inside `frontend/`) if you've changed frontend source and want to see those changes reflected — a plain `git clone` already has a working, current build without that step. If `frontend/dist` is ever somehow missing entirely, the server returns a clear "run `npm run build`" message rather than any UI at all — there is no silent fallback UI. (An older, much plainer HTML/CSS/JS prototype used to live in `static/` and get served silently whenever the build was missing, which is why the UI could look completely different across machines — that prototype has been removed for exactly this reason.)
 
-> **On every machine you run this on** (including a fresh `git clone`), you must do one of the two above — either `npm run dev` or `npm run build` — before opening the app. `frontend/dist` is gitignored (it's a build artifact, not source), so it does not exist right after cloning. If you open `http://127.0.0.1:8000` before building, the server now returns a clear "run `npm run build`" message rather than any UI at all — there is no fallback UI to fall back to. (An older, much plainer HTML/CSS/JS prototype used to live in `static/` and get served silently whenever the build was missing, which is why the UI could look completely different across machines — that prototype has been removed for exactly this reason.)
+> **Contributing frontend changes?** `frontend/dist` is committed, so it must be rebuilt and included in the same commit as any change under `frontend/src/` — otherwise the tracked build drifts out of sync with the source next to it, and anyone who pulls (without separately running `npm run build`) keeps seeing the old UI. Run `npm run build` and `git add frontend/dist` alongside your source changes before committing.
 
-> **Already have this cloned somewhere and just ran `git pull`?** Pulling new code does **not** rebuild `frontend/dist/` for you — git never touches it (it's ignored, not source), so an existing checkout keeps serving whatever was last built there, silently, with no error. If a machine still shows an old name/branding, is missing a feature you know you pushed, or otherwise looks "behind," this is almost always why. Re-run `npm run build` (or restart `npm run dev`) after every pull that touches anything under `frontend/`. Likewise, `.env` and `data/` (your local session history/DB) are per-machine and never touched by git either — pulling code doesn't change your API keys or chat history on that machine, for better or worse.
+> **Machine still shows an old name/branding, or is missing a feature you know you pushed?** Before this project committed `frontend/dist`, every checkout had to build its own copy locally, and pulling new source never touched that local build — so a machine's UI could silently drift out of sync with its own code with no error. If you're seeing that now on an *existing* checkout that predates this change, delete its stale `frontend/dist/` folder once, then `git pull` — the committed build will take its place cleanly. `.env` and `data/` (your local session history/DB) are separately per-machine and never touched by git either way — pulling code doesn't change your API keys or chat history on that machine.
 
 **CLI mode** — `main.py` is a separate, text-only terminal interface that talks to the same `Agent` class directly (no server, no browser, no voice):
 ```bash
