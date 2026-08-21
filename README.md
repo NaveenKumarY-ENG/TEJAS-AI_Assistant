@@ -11,6 +11,7 @@ It talks back and forth by text or voice, remembers context across sessions, and
 - **Real-time chat** over a WebSocket, with streaming responses.
 - **Voice input** — click the mic, speak, and it transcribes and sends automatically (local Whisper by default, no cloud dependency).
 - **Voice output** — TEJAS speaks its replies aloud (toggle on/off in the top bar); works for both typed and spoken questions.
+- **Fullscreen Voice Mode** (sidebar → Voice) — a dedicated, hands-free conversation view: it auto-listens again after each reply via real voice-activity detection, and can run a different model just for voice (e.g. a faster local one) than whatever Chat has active, swapping back automatically when you exit.
 - **Tool use** — the model can call real tools (web search, weather, date/time, system info, sandboxed file I/O, sandboxed Python execution, reminders, fact memory) instead of guessing.
 - **Session history** — chats persist in SQLite; pick up an old conversation, start a new one, or delete one you no longer need, Claude-style.
 - **Semantic memory** — relevant snippets from past conversations are recalled automatically via a ChromaDB vector store (with safeguards so stale, point-in-time facts like "today's weather" never get recalled as if still true).
@@ -109,6 +110,7 @@ You need both processes running at once, in separate terminals:
 ```bash
 uvicorn server:app --reload
 ```
+Once it's up, this opens `http://127.0.0.1:8000` in Chrome automatically (only once per `--reload` session, not on every autoreload restart). Set `TEJAS_NO_AUTO_OPEN=1` in `.env` to disable — e.g. on a headless machine.
 
 **Frontend** (from `frontend/`, dev mode with hot reload):
 ```bash
@@ -120,6 +122,8 @@ Then open the URL Vite prints (typically `http://localhost:5173`). The Vite dev 
 **Production build** — `npm run build` inside `frontend/` produces `frontend/dist`, which `server.py` serves directly (so you only need to run `uvicorn server:app` and open `http://127.0.0.1:8000`, no separate frontend server needed).
 
 > **On every machine you run this on** (including a fresh `git clone`), you must do one of the two above — either `npm run dev` or `npm run build` — before opening the app. `frontend/dist` is gitignored (it's a build artifact, not source), so it does not exist right after cloning. If you open `http://127.0.0.1:8000` before building, the server now returns a clear "run `npm run build`" message rather than any UI at all — there is no fallback UI to fall back to. (An older, much plainer HTML/CSS/JS prototype used to live in `static/` and get served silently whenever the build was missing, which is why the UI could look completely different across machines — that prototype has been removed for exactly this reason.)
+
+> **Already have this cloned somewhere and just ran `git pull`?** Pulling new code does **not** rebuild `frontend/dist/` for you — git never touches it (it's ignored, not source), so an existing checkout keeps serving whatever was last built there, silently, with no error. If a machine still shows an old name/branding, is missing a feature you know you pushed, or otherwise looks "behind," this is almost always why. Re-run `npm run build` (or restart `npm run dev`) after every pull that touches anything under `frontend/`. Likewise, `.env` and `data/` (your local session history/DB) are per-machine and never touched by git either — pulling code doesn't change your API keys or chat history on that machine, for better or worse.
 
 **CLI mode** — `main.py` is a separate, text-only terminal interface that talks to the same `Agent` class directly (no server, no browser, no voice):
 ```bash
@@ -147,6 +151,7 @@ All settings live in `.env` (copy from `.env.example`). Key ones:
 | `WHISPER_MODEL` | `small.en` | Local Whisper model size (`tiny.en` → `medium.en`, bigger = more accurate but slower) |
 | `OPENAI_API_KEY` | — | Required only if `STT_PROVIDER=openai` |
 | `SEARCH_API_KEY` | — | Optional. Enables `web_search` (free key at [tavily.com](https://tavily.com)) |
+| `TEJAS_NO_AUTO_OPEN` | — | Set to `1` to stop `uvicorn server:app --reload` from auto-opening Chrome on startup (e.g. headless/CI environments) |
 
 ## Available tools
 
