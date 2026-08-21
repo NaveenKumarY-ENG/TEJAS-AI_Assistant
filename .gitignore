@@ -9,8 +9,12 @@ venv/
 
 # Frontend
 frontend/node_modules/
-frontend/dist/
 frontend/.vite/
+# frontend/dist/ is intentionally NOT ignored — it's committed so the app
+# runs identically right after `git clone` on any machine, with no npm
+# build step required just to view the UI. Rebuild it (`npm run build`)
+# and commit the result whenever frontend source changes, or a clone will
+# keep showing the last-committed build instead of your latest source.
 
 # Editor/OS
 .vscode/

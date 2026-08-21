@@ -8,7 +8,9 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
+# dist is intentionally NOT ignored here — see the note in the root
+# .gitignore. It's committed so a fresh clone shows the current UI with
+# no npm build step required.
 dist-ssr
 *.local
 
