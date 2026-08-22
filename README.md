@@ -10,7 +10,7 @@ It talks back and forth by text or voice, remembers context across sessions, and
 
 - **Real-time chat** over a WebSocket, with streaming responses.
 - **Voice input** — click the mic, speak, and it transcribes and sends automatically (local Whisper by default, no cloud dependency).
-- **Voice output** — TEJAS speaks its replies aloud (toggle on/off in the top bar); works for both typed and spoken questions.
+- **Voice output** — TEJAS speaks its replies aloud (toggle on/off in the top bar); works for both typed and spoken questions. A real neural voice (Kokoro-82M, GPU-accelerated via CUDA when available) runs server-side by default, falling back automatically to the browser's built-in voice if the neural backend isn't installed/available or a request fails. Switchable live between 3 voices (2 male, 1 female — see the voice selector next to the model switcher in the top bar and in Voice Mode) with no restart needed.
 - **Fullscreen Voice Mode** (sidebar → Voice) — a dedicated, hands-free conversation view: it auto-listens again after each reply via real voice-activity detection, and can run a different model just for voice (e.g. a faster local one) than whatever Chat has active, swapping back automatically when you exit.
 - **Tool use** — the model can call real tools (web search, weather, date/time, system info, sandboxed file I/O, sandboxed Python execution, reminders, fact memory) instead of guessing.
 - **Session history** — chats persist in SQLite; pick up an old conversation, start a new one, or delete one you no longer need, Claude-style.
@@ -18,7 +18,9 @@ It talks back and forth by text or voice, remembers context across sessions, and
 - **Switchable LLM backends** — local Ollama (Qwen 2.5, Llama 3.1, Gemma 2, ...), Anthropic Claude, or Google Gemini (hosted, stronger tool-calling; Gemini has a free tier with no billing/card required), swappable live from a dropdown in the top bar, no restart needed.
 - **Dual STT backends** — local faster-whisper (free, offline) or OpenAI's Whisper API, with automatic fallback to local if the cloud call fails.
 - **Quick actions** — one-click canned prompts (weather, web search, system check, reminders, memory, timezone lookups, quick calculations) in the sidebar for instant access without typing.
+- **Creator profile popup** — clicking the "N" avatar in the sidebar shows the creator's name and contact links (`frontend/src/constants/profile.ts`).
 - **A hand-built Three.js hologram** — the "AI Core" visual reacts to the assistant's state (idle / listening / thinking / speaking).
+- **Formatted replies** — assistant messages render real Markdown (bold, lists, links, inline code) instead of showing raw `**asterisks**`; links are scheme-checked before becoming clickable (see [Security notes](#security-notes)).
 
 ## Architecture
 
@@ -47,7 +49,8 @@ tejas-assistant/
 ├── agent/
 │   ├── loop.py               # Core agent loop: history, tool-calling, streaming, memory
 │   ├── llm_client.py         # Ollama + Anthropic backends behind one interface
-│   └── transcription.py      # Local (faster-whisper) + OpenAI speech-to-text
+│   ├── transcription.py      # Local (faster-whisper) + OpenAI speech-to-text
+│   └── tts.py                 # Neural voice output (Kokoro-82M, GPU via CUDA)
 ├── tools/                   # One file per tool; register new ones in tools/__init__.py
 │   ├── web_search.py         # Tavily-backed web search
 │   ├── weather.py            # Open-Meteo current weather + forecast
@@ -73,12 +76,14 @@ tejas-assistant/
 
 - Python 3.11+
 - Node.js 18+ (for the frontend)
-- [Ollama](https://ollama.com) installed and running locally — this is the default LLM backend. `qwen2.5:7b` is the one active at startup (`OLLAMA_MODEL` in `.env`), but pulling all three lets you use the in-app model switcher (top bar) to swap between them live:
+- [Ollama](https://ollama.com) installed and running locally — this is the default LLM backend. `qwen2.5:7b` is the one active at startup (`OLLAMA_MODEL` in `.env`), but pulling all four lets you use the in-app model switcher (top bar) to swap between them live:
   ```
   ollama pull qwen2.5:7b
+  ollama pull qwen3:8b
   ollama pull llama3.1
   ollama pull gemma2:9b
   ```
+  `qwen3:8b` is a newer generation than `qwen2.5:7b` at a similar size/speed footprint — a meaningfully better option to add if you have the ~5GB of disk to spare.
 
 ## Setup
 
@@ -89,11 +94,22 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # macOS/Linux
 
+# Optional but recommended if you have an NVIDIA GPU: install a CUDA build
+# of torch BEFORE the line below, so neural voice output (TTS_PROVIDER=neural,
+# see Configuration) runs on the GPU instead of CPU. Skipping this step is
+# fine — requirements.txt still installs a working CPU-only torch as a
+# dependency of kokoro, just slower for TTS. Pick the cu1xx tag matching
+# your installed CUDA toolkit (cu121/cu124/...); if unsure, this works for
+# most recent drivers:
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
 pip install -r requirements.txt
 copy .env.example .env          # Windows: copy, macOS/Linux: cp
 ```
 
 Edit `.env` as needed (see [Configuration](#configuration) below) — the defaults work out of the box with just Ollama running locally.
+
+Neural TTS also uses `espeak-ng` as an optional fallback for out-of-dictionary/foreign words (not needed for normal English text) — install it separately if you notice mispronounced uncommon words: [espeak-ng releases](https://github.com/espeak-ng/espeak-ng/releases).
 
 **2. Frontend**
 
@@ -152,6 +168,9 @@ All settings live in `.env` (copy from `.env.example`). Key ones:
 | `STT_PROVIDER` | `local` | `local` (faster-whisper, offline) or `openai` (Whisper API; auto-falls-back to local on failure) |
 | `WHISPER_MODEL` | `small.en` | Local Whisper model size (`tiny.en` → `medium.en`, bigger = more accurate but slower) |
 | `OPENAI_API_KEY` | — | Required only if `STT_PROVIDER=openai` |
+| `TTS_PROVIDER` | `neural` | `neural` (Kokoro-82M, GPU via CUDA when available) or `browser` (disable server-side TTS, use the browser's built-in voice only). `neural` also auto-falls-back to the browser voice at runtime if torch/kokoro aren't installed |
+| `TTS_VOICE` | `am_michael` | Startup voice — switchable live in the UI between the 3 presets in `AVAILABLE_TTS_VOICES` (`config.py`): `am_michael`/`am_fenrir` (male), `af_heart` (female). Any other name from the [voice pack list](https://huggingface.co/hexgrad/Kokoro-82M) also works here, just won't appear as a clickable option |
+| `TTS_LANG_CODE` | `a` | Kokoro language/voice-pack prefix (`a` = American English); must match `TTS_VOICE`'s prefix |
 | `SEARCH_API_KEY` | — | Optional. Enables `web_search` (free key at [tavily.com](https://tavily.com)) |
 | `TEJAS_NO_AUTO_OPEN` | — | Set to `1` to stop `uvicorn server:app --reload` from auto-opening Chrome on startup (e.g. headless/CI environments) |
 
@@ -179,13 +198,16 @@ The frontend talks to `server.py` over one WebSocket plus a handful of REST endp
 | Endpoint | Purpose |
 |---|---|
 | `WS /ws` | The chat itself. Send `{"text": "..."}`; receive a stream of `{"type": "chunk\|tool\|done\|error", ...}` events. Optional `?session_id=<id>` or `?resume=1` query params pick which session to attach to. |
-| `GET /api/meta` | Assistant name, active model, and the full tool list (name + description) — what the UI header/status panel reads on load. |
+| `GET /api/meta` | Assistant name, active model, full tool list (name + description), and whether neural TTS is available (`tts_available`) — what the UI header/status panel reads on load, and what decides which voice engine the frontend uses. |
 | `GET /api/models` | All models in `AVAILABLE_MODELS` plus which one is currently active. |
 | `POST /api/models` | Switch the active model. Body: `{"id": "<model id from /api/models>"}`. Takes effect on the next chat turn. |
 | `GET /api/sessions` | Recent sessions with message counts, newest first. |
 | `DELETE /api/sessions/{id}` | Delete a session and its messages. 404 if it doesn't exist. |
 | `GET /api/reminders` | Active (not-yet-completed) reminders. |
 | `POST /api/transcribe` | Multipart audio upload (`audio` field) → `{"text": "..."}`. Powers the mic button; also usable standalone. |
+| `POST /api/tts` | Body `{"text": "..."}` → `audio/wav` bytes, synthesized by the neural voice (`agent/tts.py`). Only meaningful when `tts_available` is true; the frontend falls back to the browser voice otherwise. |
+| `GET /api/tts/voices` | All voices in `AVAILABLE_TTS_VOICES` plus which one is currently active. |
+| `POST /api/tts/voices` | Switch the active TTS voice. Body: `{"id": "<voice id from /api/tts/voices>"}`. Takes effect on the next spoken reply — no reload (Kokoro's voice is a per-call parameter). |
 
 ## Testing
 
@@ -206,12 +228,13 @@ Local 7B-class models are noticeably less reliable than hosted models like Claud
 
 - The current date/time is injected directly into the system prompt every request (not left to the model to "know" or fetch), and sampling temperature is kept at 0 so the model doesn't drift off given facts.
 - Point-in-time facts (weather, date/time, system stats) are excluded from long-term semantic memory, so a stale reading never gets recalled later and repeated as if still current.
+- The system prompt explicitly forbids following a disclosed tool failure with a guessed answer ("however, based on what I know...") — a smaller local model will otherwise disclose the failure *and then guess anyway*, which is worse than either alone. `tools/web_search.py` also treats a leftover placeholder `SEARCH_API_KEY` (copied from `.env.example` and never filled in) the same as a missing one, returning a clear "not configured" message instead of a confusing raw HTTP error that a model can use as cover to fabricate an answer.
 
 If you need stronger overall reasoning and tool reliability, switch `LLM_PROVIDER=anthropic` (costs money) or `LLM_PROVIDER=gemini` (free tier, no billing required) in `.env` — no local install needed either way.
 
 ### Switching models at runtime
 
-`OLLAMA_MODEL`/`LLM_PROVIDER` in `.env` only set the model active at startup. From there, the model switcher in the top bar of the UI lets you swap between the presets in `AVAILABLE_MODELS` (`config.py`) — currently `qwen2.5:7b`, `llama3.1:latest`, `gemma2:9b`, Claude, and Gemini — on the fly, no restart or reconnect needed (`GET`/`POST /api/models`). Local models must already be pulled (e.g. `ollama pull llama3.1`); switching to the Anthropic or Gemini entry requires the matching API key to be set.
+`OLLAMA_MODEL`/`LLM_PROVIDER` in `.env` only set the model active at startup. From there, the model switcher in the top bar of the UI lets you swap between the presets in `AVAILABLE_MODELS` (`config.py`) — currently `qwen2.5:7b`, `qwen3:8b`, `llama3.1:latest`, `gemma2:9b`, Claude, and Gemini — on the fly, no restart or reconnect needed (`GET`/`POST /api/models`). Local models must already be pulled (e.g. `ollama pull llama3.1`); switching to the Anthropic or Gemini entry requires the matching API key to be set.
 
 Not every local model supports Ollama's tool-calling template — `gemma2:9b` doesn't, and would error on every turn if tools were sent to it. Models like this are flagged `"supports_tools": False` in `AVAILABLE_MODELS`, which makes the backend omit the tools payload and adjust the system prompt accordingly: the model still chats normally, it just can't call `web_search`, `execute_python`, reminders, etc. while active. `qwen2.5:7b` and `llama3.1:latest` both support tools fully.
 
@@ -237,8 +260,13 @@ Two other things in this codebase help further:
 
 None of this changes the fundamental limit: the *first* processing of ~800 tokens of tool schema on a CPU-only 7B model will always take tens of seconds. If that's not acceptable, `LLM_PROVIDER=anthropic` or `LLM_PROVIDER=gemini` (the latter free, no billing required) don't hit this wall at all — cloud inference processes the same schema in a couple of seconds, every time.
 
+### GPU/VRAM sharing (Ollama + neural TTS)
+
+On a GPU-enabled machine, Ollama and Kokoro (neural TTS) share the same VRAM pool. A 7B-class Ollama model typically holds ~4GB; Kokoro-82M is small enough (well under 500MB) that it comfortably coexists on an 8GB card, and still fits on a 6GB card with a few GB to spare. If you're on a smaller GPU and see out-of-memory errors, set `TTS_PROVIDER=browser` to free that headroom for the LLM — voice output still works, just via the browser's voice instead of the neural one.
+
 ## Security notes
 
 - Never commit your real `.env` — only `.env.example` (with placeholder values) belongs in version control.
 - `execute_python` and `file_ops` are sandboxed to `data/sandbox/` — they cannot access the rest of your filesystem.
 - `execute_python` runs with a hard timeout and no special privileges beyond the sandbox directory.
+- Assistant replies render as Markdown (see [Features](#features)), which means links in them can become real clickable `<a>` elements — including links the model might reproduce verbatim from `web_search` results on an untrusted page. `ConversationPanel.tsx` only renders `http:`/`https:`/`mailto:` links as clickable; anything else (`javascript:`, `data:`, ...) renders as inert plain text instead.

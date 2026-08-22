@@ -2,6 +2,7 @@ import { Bell, Volume2, VolumeX } from "lucide-react";
 import { useMemo } from "react";
 import { useAssistantStore } from "../../store/assistantStore";
 import { ModelSelector } from "../ui/ModelSelector";
+import { VoiceSelector } from "../ui/VoiceSelector";
 import { timeOfDayGreeting } from "../../utils/greeting";
 
 function useGreeting() {
@@ -33,6 +34,7 @@ export function TopBar({
 
       <div className="flex items-center gap-2.5">
         <ModelSelector onError={onModelError} />
+        <VoiceSelector onError={onModelError} />
 
         <button
           type="button"

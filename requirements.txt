@@ -8,6 +8,14 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 faster-whisper>=1.0.0
 python-multipart>=0.0.9
+
+# Neural TTS (agent/tts.py) — GPU-accelerated (Kokoro-82M) when CUDA is
+# available, CPU otherwise. Deliberately NOT listing `torch` here: PyPI's
+# default Windows wheel is CPU-only, which would silently defeat GPU
+# acceleration. Install a CUDA build of torch FIRST, before this file —
+# see README.md's Setup section for the exact command.
+kokoro>=0.9.4
+soundfile>=0.12.1
 tzdata>=2024.1  # zoneinfo has no IANA database on Windows without this — get_current_datetime silently failed for every non-local timezone without it
 
 # Development / testing only

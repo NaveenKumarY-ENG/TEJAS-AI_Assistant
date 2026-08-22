@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import { AssistantCore } from "../core/AssistantCore";
 import { ConversationPanel } from "../ui/ConversationPanel";
 import { ModelSelector } from "../ui/ModelSelector";
+import { VoiceSelector } from "../ui/VoiceSelector";
 import { MicButton } from "./MicButton";
 import { VoiceWaveform, type WaveformMode } from "./VoiceWaveform";
 import { useSpeechRecognition } from "../../hooks/useSpeechRecognition";
@@ -202,6 +203,7 @@ export function VoiceMode({ coreState, onSend, stopSpeaking, ttsBoundaryRef, onE
           </span>
           <div className="flex items-center gap-2.5">
             <ModelSelector onError={(m) => setVoiceError(m)} />
+            <VoiceSelector onError={(m) => setVoiceError(m)} />
             <button
               type="button"
               onClick={handleExit}
@@ -255,7 +257,11 @@ export function VoiceMode({ coreState, onSend, stopSpeaking, ttsBoundaryRef, onE
           </div>
         </div>
 
-        <div className="mx-auto mb-6 max-h-[26vh] w-full max-w-2xl overflow-hidden rounded-2xl border border-white/[0.06] bg-black/30 backdrop-blur-md">
+        {/* flex + flex-col is what makes ConversationPanel's own flex-1/
+            overflow-y-auto actually take effect — without a flex parent to
+            size it against, it just grows with content and gets silently
+            clipped by this box's max-h instead of scrolling. */}
+        <div className="mx-auto mb-6 flex max-h-[26vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-white/[0.06] bg-black/30 backdrop-blur-md">
           <ConversationPanel />
         </div>
       </div>

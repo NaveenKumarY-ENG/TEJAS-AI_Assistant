@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useAssistantStore } from "../store/assistantStore";
 import { useSpeechSynthesis } from "./useSpeechSynthesis";
-import { extractCompleteSentences } from "../utils/text";
+import { useNeuralSpeech } from "./useNeuralSpeech";
+import { extractCompleteSentences, humanizeForSpeech, stripMarkdownForSpeech } from "../utils/text";
 import {
   ERROR_DISPLAY_MS,
   RECONNECT_BASE_MS,
@@ -36,8 +37,20 @@ type ServerEvent =
  * coreState only returns to "idle" once BOTH the text stream AND the speech
  * queue have finished, so the hologram's speaking animation stays in sync
  * with actual audio instead of cutting out while TEJAS is still talking.
+ *
+ * Voice engine: `ttsAvailable` (from /api/meta's tts_available, resolved
+ * asynchronously by the caller) picks between the neural (GPU, backend)
+ * and browser (SpeechSynthesis) engines. Both are instantiated unconditionally
+ * (cheap while idle, and required by the Rules of Hooks), but which one
+ * actually speaks is decided per-call via ttsAvailableRef rather than by
+ * swapping which functions `connect`'s WebSocket closures capture — those
+ * closures are only rebuilt on reconnect, so a value that can flip mid-session
+ * (the /api/meta fetch resolving after the socket's first connect) has to be
+ * read live through a ref, not captured at closure-creation time, or a
+ * session that connects before the fetch resolves would be stuck on the
+ * wrong engine for its entire lifetime.
  */
-export function useAssistantSocket() {
+export function useAssistantSocket(ttsAvailable: boolean) {
   const socketRef = useRef<WebSocket | null>(null);
   const streamIdRef = useRef<string | null>(null);
   const reconnectTimer = useRef<number | null>(null);
@@ -57,6 +70,11 @@ export function useAssistantSocket() {
   const speechBufferRef = useRef("");
   const spokeAnythingRef = useRef(false);
   const awaitingSpeechEndRef = useRef(false);
+
+  const ttsAvailableRef = useRef(ttsAvailable);
+  useEffect(() => {
+    ttsAvailableRef.current = ttsAvailable;
+  }, [ttsAvailable]);
 
   const {
     setConnection,
@@ -84,17 +102,59 @@ export function useAssistantSocket() {
     }
   }, []);
 
-  const {
-    enqueue: speakText,
-    stop: stopSpeakingRaw,
-    supported: ttsSupported,
-    boundaryRef: ttsBoundaryRef,
-  } = useSpeechSynthesis(() => {
+  const onSpeechQueueDrained = useCallback(() => {
     if (awaitingSpeechEndRef.current) {
       awaitingSpeechEndRef.current = false;
       finishStream();
     }
-  });
+  }, [finishStream]);
+
+  const browserTts = useSpeechSynthesis(onSpeechQueueDrained);
+  const neuralTts = useNeuralSpeech(onSpeechQueueDrained);
+
+  // Stable regardless of which engine is active — see the ttsAvailableRef
+  // note above for why the routing decision has to happen inside these
+  // function bodies (read live) rather than by picking which hook's
+  // `.enqueue`/`.stop` this const points to. Depending on the inner
+  // functions directly (not the whole browserTts/neuralTts objects, which
+  // are fresh literals every render) is what keeps these two identity-stable
+  // across renders.
+  const speakText = useCallback(
+    (text: string) => {
+      // Rewrites an all-caps assistant name (e.g. "TEJAS") to Title Case
+      // before it reaches either engine — see humanizeForSpeech's own
+      // comment for why (both TTS engines otherwise spell it out as an
+      // acronym). Read live via getState() rather than a subscribed value
+      // so this stays correct even if ASSISTANT_NAME is ever changed
+      // without needing speakText's identity to depend on it.
+      const spoken = humanizeForSpeech(stripMarkdownForSpeech(text), useAssistantStore.getState().assistantName);
+      (ttsAvailableRef.current ? neuralTts.enqueue : browserTts.enqueue)(spoken);
+    },
+    // Depending on the .enqueue functions themselves (stable across renders)
+    // rather than the browserTts/neuralTts objects (fresh literals every
+    // render) is deliberate, not a missing-deps oversight — see the comment
+    // above. react-hooks' exhaustive-deps lint doesn't reason well about
+    // member-expression deps here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [neuralTts.enqueue, browserTts.enqueue]
+  );
+  const stopSpeakingRaw = useCallback(() => {
+    // Stop both unconditionally (cheap, idempotent) rather than only the
+    // "active" one — guards the edge case where ttsAvailable flips between
+    // when a sentence was spoken and when stop() is called.
+    browserTts.stop();
+    neuralTts.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browserTts.stop, neuralTts.stop]);
+  // Neither engine's "supported" reflects backend reachability (that's
+  // ttsAvailable's job) — both are just "can this browser do TTS at all,"
+  // which barely changes at runtime, so an OR here is stable enough to use
+  // directly (no ref indirection needed).
+  const ttsSupported = browserTts.supported || neuralTts.supported;
+  // Selected fresh every render (not inside a WebSocket closure), so this
+  // one DOES correctly re-point once ttsAvailable resolves — consumers
+  // (ChatInput/VoiceMode) just read .current on whatever ref this is this render.
+  const ttsBoundaryRef = ttsAvailable ? neuralTts.boundaryRef : browserTts.boundaryRef;
 
   const stopSpeaking = useCallback(() => {
     // Cancelling the CURRENT utterance isn't enough on its own: the backend

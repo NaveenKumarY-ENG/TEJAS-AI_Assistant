@@ -25,12 +25,12 @@ import webbrowser
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from agent import Agent, transcription
-from config import AVAILABLE_MODELS, config
+from agent import Agent, transcription, tts
+from config import AVAILABLE_MODELS, AVAILABLE_TTS_VOICES, config
 from memory import structured
 from tools import ALL_TOOLS
 
@@ -126,6 +126,18 @@ def _open_dashboard_once() -> None:
 async def _launch_browser() -> None:
     _open_dashboard_once()
 
+
+@app.on_event("startup")
+async def _warm_up_tts() -> None:
+    # Background thread, not awaited: even the "just check it's installed"
+    # probe in agent/tts.py's available() can take several seconds (`import
+    # torch` alone routinely does, from CUDA library loading), so this runs
+    # concurrently with startup instead of delaying it — and, in the normal
+    # case, finishes before any browser tab's first /api/meta request
+    # arrives, so that request sees an instant cache hit rather than paying
+    # the import cost itself.
+    threading.Thread(target=tts.warm_up, daemon=True).start()
+
 FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 
 if FRONTEND_DIST.exists():
@@ -157,10 +169,19 @@ else:
 @app.get("/api/meta")
 async def meta():
     """Everything the UI needs to render its header and tool list."""
+    # tts.available() is cached after its first real computation (see
+    # agent/tts.py) and the startup hook warms that cache in a background
+    # thread — but if a request races ahead of that thread finishing, the
+    # underlying `import torch` it falls back to computing synchronously
+    # can itself take several seconds. asyncio.to_thread keeps that race's
+    # worst case from blocking the whole event loop (and the active /ws
+    # chat with it), matching the same pattern /api/tts already uses.
+    tts_available = await asyncio.to_thread(tts.available)
     return {
         "assistant_name": config.assistant_name,
         "model": config.active_model,
         "tools": [{"name": t.name, "description": t.description} for t in ALL_TOOLS],
+        "tts_available": tts_available,
     }
 
 
@@ -183,6 +204,28 @@ async def select_model(selection: ModelSelection):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"active": config.active_model_id, "model": config.active_model}
+
+
+@app.get("/api/tts/voices")
+async def list_tts_voices():
+    """Every neural TTS voice the UI can switch to, plus which one is
+    active right now (mirrors /api/models)."""
+    return {"voices": AVAILABLE_TTS_VOICES, "active": config.tts_voice}
+
+
+class TtsVoiceSelection(BaseModel):
+    id: str
+
+
+@app.post("/api/tts/voices")
+async def select_tts_voice(selection: TtsVoiceSelection):
+    """Switch the active neural voice — takes effect on the next /api/tts
+    call, no restart needed (agent/tts.py reads config fresh every call)."""
+    try:
+        config.set_active_tts_voice(selection.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"active": config.tts_voice}
 
 
 @app.get("/api/sessions")
@@ -215,6 +258,26 @@ async def transcribe(audio: UploadFile = File(...)):
         logger.exception("Transcription failed")
         raise HTTPException(status_code=500, detail="Transcription failed")
     return {"text": text}
+
+
+class TtsRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/tts")
+async def synthesize_speech(payload: TtsRequest):
+    """Neural voice output — see agent/tts.py. The frontend only calls this
+    when /api/meta reported tts_available=true; it falls back to the
+    browser's own TTS on any failure here rather than losing audio."""
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="No text provided")
+    try:
+        audio = await asyncio.to_thread(tts.synthesize, text)
+    except Exception:
+        logger.exception("TTS synthesis failed")
+        raise HTTPException(status_code=500, detail="TTS synthesis failed")
+    return Response(content=audio, media_type="audio/wav")
 
 
 @app.websocket("/ws")

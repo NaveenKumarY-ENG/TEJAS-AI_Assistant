@@ -10,6 +10,11 @@ export interface ModelOption {
   label: string;
 }
 
+export interface TtsVoiceOption {
+  id: string;
+  label: string;
+}
+
 // A single ordered timeline holds both chat messages and tool-call events,
 // interleaved in the order they actually happened — a tool call from turn 1
 // stays visible in history rather than being wiped once that turn's reply
@@ -26,6 +31,8 @@ interface AssistantStore {
   model: string;
   modelId: string;
   availableModels: ModelOption[];
+  ttsVoiceId: string;
+  ttsVoices: TtsVoiceOption[];
   toolCount: number;
   timeline: TimelineEntry[];
   streamingId: string | null;
@@ -45,6 +52,8 @@ interface AssistantStore {
   setMeta: (meta: { assistantName?: string; model?: string; toolCount?: number }) => void;
   setModels: (models: ModelOption[], activeId: string) => void;
   setActiveModel: (id: string, model: string) => void;
+  setTtsVoices: (voices: TtsVoiceOption[], activeId: string) => void;
+  setActiveTtsVoice: (id: string) => void;
   hydrateHistory: (msgs: Array<{ role: string; content: string }>) => void;
   addUserMessage: (text: string) => void;
   beginAssistantStream: () => string;
@@ -69,6 +78,8 @@ export const useAssistantStore = create<AssistantStore>((set) => ({
   model: "",
   modelId: "",
   availableModels: [],
+  ttsVoiceId: "",
+  ttsVoices: [],
   toolCount: 0,
   timeline: [],
   streamingId: null,
@@ -86,6 +97,8 @@ export const useAssistantStore = create<AssistantStore>((set) => ({
     })),
   setModels: (models, activeId) => set({ availableModels: models, modelId: activeId }),
   setActiveModel: (id, model) => set({ modelId: id, model }),
+  setTtsVoices: (voices, activeId) => set({ ttsVoices: voices, ttsVoiceId: activeId }),
+  setActiveTtsVoice: (id) => set({ ttsVoiceId: id }),
 
   hydrateHistory: (msgs) =>
     set({

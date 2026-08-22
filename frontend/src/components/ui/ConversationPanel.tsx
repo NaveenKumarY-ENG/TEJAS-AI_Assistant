@@ -1,5 +1,50 @@
 import { useEffect, useRef } from "react";
+import Markdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
 import { useAssistantStore } from "../../store/assistantStore";
+
+// Only these schemes render as a real, clickable link. Assistant text can
+// echo content from web_search results (page titles/snippets from
+// arbitrary sites), and a smaller local model can reproduce a malicious
+// markdown link verbatim — without this check, react-markdown would happily
+// turn "[Click here](javascript:...)" into a real anchor a user could click
+// and execute script in the app's origin. Anything else renders as plain
+// text instead of a link, same as if react-markdown weren't here at all.
+function isSafeHref(href: string | undefined): href is string {
+  if (!href) return false;
+  try {
+    const url = new URL(href, window.location.origin);
+    return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:";
+  } catch {
+    return false;
+  }
+}
+
+// Maps Markdown elements to the panel's existing dark-glass style — kept
+// minimal (no @tailwindcss/typography dependency) since replies only ever
+// use a handful of these (bold, lists, links, inline code, paragraphs).
+// Only assistant messages render through this; user messages stay plain
+// text (see the `entry.role === "assistant"` check below) since a user's
+// own typed text shouldn't be re-interpreted as Markdown syntax.
+const markdownComponents = {
+  p: ({ children }: { children?: React.ReactNode }) => <p className="mb-1.5 last:mb-0">{children}</p>,
+  strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-semibold text-white">{children}</strong>,
+  em: ({ children }: { children?: React.ReactNode }) => <em className="italic">{children}</em>,
+  ul: ({ children }: { children?: React.ReactNode }) => <ul className="mb-1.5 ml-4 list-disc space-y-0.5 last:mb-0">{children}</ul>,
+  ol: ({ children }: { children?: React.ReactNode }) => <ol className="mb-1.5 ml-4 list-decimal space-y-0.5 last:mb-0">{children}</ol>,
+  li: ({ children }: { children?: React.ReactNode }) => <li>{children}</li>,
+  code: ({ children }: { children?: React.ReactNode }) => (
+    <code className="rounded bg-white/10 px-1 py-0.5 font-mono text-[13px]">{children}</code>
+  ),
+  a: ({ href, children }: { href?: string; children?: React.ReactNode }) =>
+    isSafeHref(href) ? (
+      <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2 hover:text-primary/80">
+        {children}
+      </a>
+    ) : (
+      <span>{children}</span>
+    ),
+};
 
 export function ConversationPanel() {
   const timeline = useAssistantStore((s) => s.timeline);
@@ -52,7 +97,15 @@ export function ConversationPanel() {
               <div className={`mb-1 text-[11px] font-semibold tracking-wide ${entry.role === "assistant" ? "text-primary" : "text-white/45"}`}>
                 {entry.role === "assistant" ? assistantName : "You"}
               </div>
-              <div className="whitespace-pre-wrap text-[14.5px] leading-relaxed text-white/95">{entry.content}</div>
+              <div className="text-[14.5px] leading-relaxed text-white/95">
+                {entry.role === "assistant" ? (
+                  <Markdown remarkPlugins={[remarkBreaks]} components={markdownComponents}>
+                    {entry.content}
+                  </Markdown>
+                ) : (
+                  <div className="whitespace-pre-wrap">{entry.content}</div>
+                )}
+              </div>
             </div>
           </div>
         );

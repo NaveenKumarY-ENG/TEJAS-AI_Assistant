@@ -43,10 +43,16 @@ function Dashboard() {
   const assistantName = useAssistantStore((s) => s.assistantName);
   const setMeta = useAssistantStore((s) => s.setMeta);
   const setModels = useAssistantStore((s) => s.setModels);
+  const setTtsVoices = useAssistantStore((s) => s.setTtsVoices);
   const voiceOutputEnabled = useAssistantStore((s) => s.voiceOutputEnabled);
   const toggleVoiceOutput = useAssistantStore((s) => s.toggleVoiceOutput);
   const { message, show } = useToast();
-  const { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef, speak } = useAssistantSocket();
+  // Starts false (browser TTS) until /api/meta resolves — useAssistantSocket
+  // reads this live via a ref internally, so flipping it after the socket's
+  // already connected still correctly switches the active voice engine.
+  const [ttsAvailable, setTtsAvailable] = useState(false);
+  const { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef, speak } =
+    useAssistantSocket(ttsAvailable);
   const [voiceModeActive, setVoiceModeActive] = useState(false);
 
   const handleToggleVoiceOutput = () => {
@@ -76,15 +82,20 @@ function Dashboard() {
   useEffect(() => {
     fetch("/api/meta")
       .then((r) => r.json())
-      .then((m) =>
-        setMeta({ assistantName: m.assistant_name, model: m.model, toolCount: m.tools?.length ?? 0 })
-      )
+      .then((m) => {
+        setMeta({ assistantName: m.assistant_name, model: m.model, toolCount: m.tools?.length ?? 0 });
+        setTtsAvailable(!!m.tts_available);
+      })
       .catch(() => {});
     fetch("/api/models")
       .then((r) => r.json())
       .then((m) => setModels(m.models ?? [], m.active ?? ""))
       .catch(() => {});
-  }, [setMeta, setModels]);
+    fetch("/api/tts/voices")
+      .then((r) => r.json())
+      .then((v) => setTtsVoices(v.voices ?? [], v.active ?? ""))
+      .catch(() => {});
+  }, [setMeta, setModels, setTtsAvailable, setTtsVoices]);
 
   const busy =
     coreState === "thinking" || coreState === "speaking" || coreState === "processing" || coreState === "searching";

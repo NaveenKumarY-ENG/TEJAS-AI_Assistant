@@ -29,10 +29,24 @@ DATA_DIR.mkdir(exist_ok=True)
 # instead of erroring on every message. Confirmed by live testing.
 AVAILABLE_MODELS: list[dict] = [
     {"id": "ollama:qwen2.5:7b", "provider": "ollama", "model": "qwen2.5:7b", "label": "Qwen 2.5 7B (Local)", "supports_tools": True},
+    {"id": "ollama:qwen3:8b", "provider": "ollama", "model": "qwen3:8b", "label": "Qwen 3 8B (Local)", "supports_tools": True},
     {"id": "ollama:llama3.1:latest", "provider": "ollama", "model": "llama3.1:latest", "label": "Llama 3.1 8B (Local)", "supports_tools": True},
     {"id": "ollama:gemma2:9b", "provider": "ollama", "model": "gemma2:9b", "label": "Gemma 2 9B (Local, no tools)", "supports_tools": False},
     {"id": "anthropic:claude-sonnet-4-6", "provider": "anthropic", "model": "claude-sonnet-4-6", "label": "Claude Sonnet (Cloud)", "supports_tools": True},
     {"id": "gemini:gemini-3.6-flash", "provider": "gemini", "model": "gemini-3.6-flash", "label": "Gemini 3.6 Flash (Cloud)", "supports_tools": True},
+]
+
+# Neural voice options for TTS_PROVIDER=neural (see agent/tts.py). Kokoro's
+# voice is a per-call parameter, not baked into the pipeline object, so
+# switching between these takes effect on the very next /api/tts call — no
+# reload needed. Confirmed against Kokoro's real voice pack list and its
+# published per-voice quality grades: am_michael/am_fenrir are both solid
+# mid-tier male voices (grade C+); af_heart is the highest-quality voice
+# overall (grade A) and was the original default before TEJAS was made male.
+AVAILABLE_TTS_VOICES: list[dict] = [
+    {"id": "am_michael", "label": "Michael (Male)"},
+    {"id": "am_fenrir", "label": "Fenrir (Male)"},
+    {"id": "af_heart", "label": "Heart (Female)"},
 ]
 
 
@@ -83,7 +97,12 @@ class Config:
         "rather than working it out in your head.\n"
         "- Never invent or fabricate tool results. Only report what a tool actually returned.\n"
         "- If a tool returns an error or says it is not configured, tell the user that "
-        "plainly rather than making up an answer.\n\n"
+        "plainly and STOP THERE. Do not follow it with 'however, based on what I know...' "
+        "or any other guessed answer — a tool failure disclosed honestly is far better than "
+        "a confident-sounding guess that might be wrong. This applies even if you feel sure "
+        "you remember the answer: you do not have a way to verify it without the tool, so "
+        "say the lookup failed and ask if the user wants you to try again, instead of stating "
+        "unverified facts as if they were reliable.\n\n"
         "Be concise. Confirm before doing anything destructive or irreversible."
     )
 
@@ -102,6 +121,19 @@ class Config:
     whisper_model: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "base.en"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     openai_stt_model: str = field(default_factory=lambda: os.getenv("OPENAI_STT_MODEL", "whisper-1"))
+
+    # --- Text-to-speech (voice output) ---
+    # "neural" (Kokoro-82M, GPU-accelerated when CUDA is available, falls
+    # back to CPU otherwise) or "browser" (disable server-side TTS entirely;
+    # the frontend uses the browser's built-in SpeechSynthesis instead, as
+    # it always did before this existed). "neural" also degrades to the
+    # browser voice automatically at runtime if torch/kokoro aren't
+    # installed or fail to load — see agent/tts.py's available().
+    tts_provider: str = field(default_factory=lambda: os.getenv("TTS_PROVIDER", "neural").strip().lower())
+    tts_voice: str = field(default_factory=lambda: os.getenv("TTS_VOICE", "am_michael"))
+    # Kokoro's language/voice-pack prefix — "a" = American English. Must
+    # match the prefix of tts_voice (e.g. "af_..."/"am_..." both use "a").
+    tts_lang_code: str = field(default_factory=lambda: os.getenv("TTS_LANG_CODE", "a"))
 
     # --- Safety ---
     sandbox_dir: str = str(DATA_DIR / "sandbox")  # code exec / file ops confined here
@@ -195,6 +227,16 @@ class Config:
             self.gemini_model = entry["model"]
         else:
             self.model = entry["model"]
+
+    def set_active_tts_voice(self, voice_id: str) -> None:
+        """Switch the neural TTS voice at runtime — agent/tts.py's
+        synthesize() reads config.tts_voice fresh on every call (Kokoro's
+        voice is a per-call parameter, not baked into the pipeline), so this
+        takes effect on the very next /api/tts request with no reload."""
+        entry = next((v for v in AVAILABLE_TTS_VOICES if v["id"] == voice_id), None)
+        if entry is None:
+            raise ValueError(f"Unknown TTS voice id: {voice_id}")
+        self.tts_voice = entry["id"]
 
 
 config = Config()

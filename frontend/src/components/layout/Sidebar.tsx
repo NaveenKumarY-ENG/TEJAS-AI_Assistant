@@ -13,6 +13,7 @@ import {
 import { useState } from "react";
 import { useAssistantStore } from "../../store/assistantStore";
 import { QuickActions } from "../ui/QuickActions";
+import { ProfileCard } from "../ui/ProfileCard";
 
 const NAV_ITEMS = [
   { icon: Home, label: "Home" },
@@ -50,10 +51,7 @@ export function Sidebar({
       }`}
     >
       <div className="flex items-center gap-3 px-4 py-5">
-        <div className="relative grid h-9 w-9 shrink-0 place-items-center rounded-full border border-primary/50 bg-primary/5 shadow-[0_0_16px_-2px_rgba(0,229,255,0.55)]">
-          <div className="absolute inset-0 rounded-full bg-primary/15 blur-md" />
-          <span className="relative text-[14px] font-bold text-primary">N</span>
-        </div>
+        <ProfileCard />
         {!collapsed && (
           <span className="text-sm font-semibold tracking-[0.2em] text-white/90">NKY.AI</span>
         )}
