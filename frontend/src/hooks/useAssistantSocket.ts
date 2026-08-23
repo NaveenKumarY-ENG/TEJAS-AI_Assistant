@@ -14,9 +14,20 @@ import {
 type ServerEvent =
   | { type: "ready"; session_id: number; history: Array<{ role: string; content: string }> }
   | { type: "tool"; name: string }
+  | { type: "tool_result"; name: string; result: string }
   | { type: "chunk"; text: string }
   | { type: "done" }
   | { type: "error"; message: string };
+
+// Matches tools/knowledge_tool.py's SearchKnowledgeTool.run() result format
+// ("From 'filename': text\n\nFrom 'filename2': text2") — pulled out here
+// rather than sending structured data over the wire, since the tool's
+// return value is already a plain string handed straight to the LLM.
+const KNOWLEDGE_SOURCE_RE = /From '([^']+)':/g;
+
+function extractKnowledgeSources(result: string): string[] {
+  return [...new Set([...result.matchAll(KNOWLEDGE_SOURCE_RE)].map((m) => m[1]))];
+}
 
 /**
  * Owns the WebSocket connection to the FastAPI /ws endpoint, translates its
@@ -86,6 +97,7 @@ export function useAssistantSocket(ttsAvailable: boolean) {
     endStream,
     pushTool,
     resolveTools,
+    setToolSources,
     setCoreState,
     reset,
   } = useAssistantStore.getState();
@@ -219,6 +231,16 @@ export function useAssistantSocket(ttsAvailable: boolean) {
             setCoreState(msg.name === "web_search" ? "searching" : "thinking");
             break;
 
+          case "tool_result": {
+            // Only ever sent for search_knowledge (see server.py's WS
+            // handler) — attaches citation filenames to the pill pushed
+            // just above, so a reply that used the knowledge base shows
+            // which document(s) it actually came from.
+            const sources = extractKnowledgeSources(msg.result);
+            if (sources.length) setToolSources(msg.name, sources);
+            break;
+          }
+
           case "chunk":
             resolveTools();
             if (!streamIdRef.current) {
@@ -287,6 +309,7 @@ export function useAssistantSocket(ttsAvailable: boolean) {
       hydrateHistory,
       pushTool,
       resolveTools,
+      setToolSources,
       setConnection,
       setCoreState,
       setSession,

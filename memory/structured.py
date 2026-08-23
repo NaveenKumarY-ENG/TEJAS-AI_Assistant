@@ -3,6 +3,7 @@ Structured memory: SQLite-backed storage for discrete facts, reminders,
 conversation sessions, and message history - things you want to query
 exactly, not semantically.
 """
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -61,6 +62,47 @@ def init_db() -> None:
         # Speeds up loading a session's history as the message table grows.
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)"
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                chunk_count INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )"""
+        )
+        # Added after documents already shipped (Phase 3) — CREATE TABLE IF
+        # NOT EXISTS above is a no-op against an existing table, so a real
+        # migration step is needed for anyone with documents predating tags.
+        existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+        if "tags" not in existing_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+        # Added in Phase 4 (folder auto-watch) — 'manual' (upload/URL/note) or
+        # 'folder' (ingested by memory/folder_watch.py). Folder-sourced
+        # documents can't be deleted directly via the UI/API (see server.py's
+        # DELETE /api/knowledge/{id}) since the watcher only re-ingests on a
+        # detected file *change*, not on "the document vanished from SQLite" —
+        # deleting a folder doc's file, or unwatching the folder, is the way
+        # to actually remove it.
+        if "source_type" not in existing_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN source_type TEXT NOT NULL DEFAULT 'manual'")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS watched_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS watched_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER NOT NULL,
+                filepath TEXT NOT NULL UNIQUE,
+                document_id INTEGER,
+                mtime REAL NOT NULL,
+                FOREIGN KEY (folder_id) REFERENCES watched_folders(id),
+                FOREIGN KEY (document_id) REFERENCES documents(id)
+            )"""
         )
 
 
@@ -200,6 +242,121 @@ def delete_session(session_id: int) -> bool:
         conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         return cur.rowcount > 0
+
+
+# ----------------------------------------------------------------------
+# Knowledge base documents
+# ----------------------------------------------------------------------
+# This table is the source of truth for a document's ID — that same integer
+# ID is stamped into each of the document's chunks in the knowledge_base
+# Chroma collection (see memory/knowledge.py), so deleting a document never
+# needs to track individual chunk UUIDs anywhere.
+
+def add_document(
+    filename: str, chunk_count: int, tags: list[str] | None = None, source_type: str = "manual"
+) -> int:
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO documents (filename, chunk_count, tags, source_type, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (filename, chunk_count, json.dumps(tags or []), source_type, datetime.utcnow().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def list_documents() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM documents ORDER BY id DESC").fetchall()
+        documents = [dict(r) for r in rows]
+    for doc in documents:
+        doc["tags"] = json.loads(doc["tags"])
+    return documents
+
+
+def update_document_tags(document_id: int, tags: list[str]) -> bool:
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE documents SET tags = ? WHERE id = ?", (json.dumps(tags), document_id)
+        )
+        return cur.rowcount > 0
+
+
+def delete_document(document_id: int) -> bool:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+        return cur.rowcount > 0
+
+
+# ----------------------------------------------------------------------
+# Watched folders (Phase 4 — memory/folder_watch.py)
+# ----------------------------------------------------------------------
+# watched_files is the reconciliation ledger: it maps an absolute filepath to
+# the document it produced and the mtime it was last ingested at, so a scan
+# can tell "new file" (not in the table) from "changed file" (mtime differs)
+# from "deleted file" (in the table, no longer on disk) without re-reading
+# every file's content just to check.
+
+def add_watched_folder(path: str) -> int:
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO watched_folders (path, created_at) VALUES (?, ?)",
+            (path, datetime.utcnow().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def list_watched_folders() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM watched_folders ORDER BY id DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_watched_folder(folder_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM watched_folders WHERE id = ?", (folder_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def delete_watched_folder(folder_id: int) -> bool:
+    with _connect() as conn:
+        conn.execute("DELETE FROM watched_files WHERE folder_id = ?", (folder_id,))
+        cur = conn.execute("DELETE FROM watched_folders WHERE id = ?", (folder_id,))
+        return cur.rowcount > 0
+
+
+def get_watched_file(filepath: str) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM watched_files WHERE filepath = ?", (filepath,)).fetchone()
+        return dict(row) if row else None
+
+
+def upsert_watched_file(folder_id: int, filepath: str, document_id: int, mtime: float) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO watched_files (folder_id, filepath, document_id, mtime)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(filepath) DO UPDATE SET document_id = excluded.document_id, mtime = excluded.mtime""",
+            (folder_id, filepath, document_id, mtime),
+        )
+
+
+def delete_watched_file(filepath: str) -> dict | None:
+    """Remove a file's tracking row and return it (so the caller can pull
+    document_id to delete the associated document), or None if it wasn't tracked."""
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM watched_files WHERE filepath = ?", (filepath,)).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM watched_files WHERE filepath = ?", (filepath,))
+        return dict(row)
+
+
+def list_watched_files(folder_id: int) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM watched_files WHERE folder_id = ? ORDER BY filepath", (folder_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 init_db()

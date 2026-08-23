@@ -11,6 +11,7 @@ import { RemindersWidget } from "./components/ui/RemindersWidget";
 import { Toast } from "./components/ui/Toast";
 import { IntroSequence } from "./components/IntroSequence";
 import { VoiceMode } from "./components/voice/VoiceMode";
+import { KnowledgePanel } from "./components/knowledge/KnowledgePanel";
 import { useAssistantStore } from "./store/assistantStore";
 import { useAssistantSocket } from "./hooks/useAssistantSocket";
 import { useToast } from "./hooks/useToast";
@@ -51,9 +52,11 @@ function Dashboard() {
   // reads this live via a ref internally, so flipping it after the socket's
   // already connected still correctly switches the active voice engine.
   const [ttsAvailable, setTtsAvailable] = useState(false);
+  const [ocrAvailable, setOcrAvailable] = useState(false);
   const { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef, speak } =
     useAssistantSocket(ttsAvailable);
   const [voiceModeActive, setVoiceModeActive] = useState(false);
+  const [knowledgePanelActive, setKnowledgePanelActive] = useState(false);
 
   const handleToggleVoiceOutput = () => {
     if (voiceOutputEnabled) stopSpeaking(); // muting mid-reply should cut audio immediately
@@ -85,6 +88,7 @@ function Dashboard() {
       .then((m) => {
         setMeta({ assistantName: m.assistant_name, model: m.model, toolCount: m.tools?.length ?? 0 });
         setTtsAvailable(!!m.tts_available);
+        setOcrAvailable(!!m.ocr_available);
       })
       .catch(() => {});
     fetch("/api/models")
@@ -114,6 +118,8 @@ function Dashboard() {
           onNewChat={startNewChat}
           onEnterVoice={() => setVoiceModeActive(true)}
           voiceModeActive={voiceModeActive}
+          onEnterKnowledge={() => setKnowledgePanelActive(true)}
+          knowledgePanelActive={knowledgePanelActive}
           onQuickAction={sendMessage}
           quickActionsDisabled={busy}
         />
@@ -170,6 +176,10 @@ function Dashboard() {
           ttsBoundaryRef={ttsBoundaryRef}
           onExit={() => setVoiceModeActive(false)}
         />
+      )}
+
+      {knowledgePanelActive && (
+        <KnowledgePanel onExit={() => setKnowledgePanelActive(false)} ocrAvailable={ocrAvailable} />
       )}
     </div>
   );

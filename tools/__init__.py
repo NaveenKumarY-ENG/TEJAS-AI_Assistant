@@ -10,12 +10,15 @@ from tools.code_exec import CodeExecutionTool
 from tools.file_ops import FileOpsTool
 from tools.memory_tool import RememberFactTool, RemindersTool
 from tools.web_search import WebSearchTool
+from tools.knowledge_tool import SearchKnowledgeTool
 
-# Kept to 8 tools (down from 12) — read/write/list files and add/list/
-# complete reminders are each one tool with an operation/action parameter
-# instead of three. On CPU-only local inference every tool in this list adds
-# real, measured prompt-processing latency to every request (see
-# agent/llm_client.py), so tool count directly affects response time.
+# Kept to 9 tools (down from 12, up from 8 with the addition of
+# search_knowledge) — read/write/list files and add/list/complete reminders
+# are each one tool with an operation/action parameter instead of three. On
+# CPU-only local inference every tool in this list adds real, measured
+# prompt-processing latency to every request (see agent/llm_client.py), so
+# tool count directly affects response time — search_knowledge earns its
+# spot because the knowledge base is useless to the model without it.
 ALL_TOOLS: list[Tool] = [
     WebSearchTool(),
     WeatherTool(),
@@ -25,6 +28,7 @@ ALL_TOOLS: list[Tool] = [
     CodeExecutionTool(),
     RemindersTool(),
     RememberFactTool(),
+    SearchKnowledgeTool(),
 ]
 
 TOOL_MAP: dict[str, Tool] = {tool.name: tool for tool in ALL_TOOLS}

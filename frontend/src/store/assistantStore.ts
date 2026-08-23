@@ -21,7 +21,7 @@ export interface TtsVoiceOption {
 // finishes streaming.
 export type TimelineEntry =
   | { id: string; kind: "message"; role: "user" | "assistant"; content: string }
-  | { id: string; kind: "tool"; name: string; done: boolean };
+  | { id: string; kind: "tool"; name: string; done: boolean; sources?: string[] };
 
 interface AssistantStore {
   coreState: CoreState;
@@ -61,6 +61,7 @@ interface AssistantStore {
   endStream: () => void;
   pushTool: (name: string) => void;
   resolveTools: () => void;
+  setToolSources: (name: string, sources: string[]) => void;
   toggleVoiceOutput: () => void;
   setPendingInput: (text: string) => void;
   clearPendingInput: () => void;
@@ -148,6 +149,21 @@ export const useAssistantStore = create<AssistantStore>((set) => ({
     set((state) => ({
       timeline: state.timeline.map((e) => (e.kind === "tool" && !e.done ? { ...e, done: true } : e)),
     })),
+
+  // Finds the latest matching tool entry (there's exactly one live
+  // candidate when this runs — see useAssistantSocket.ts's "tool_result"
+  // handler for why) and attaches its sources for the pill to render.
+  setToolSources: (name, sources) =>
+    set((state) => {
+      const idx = [...state.timeline].reverse().findIndex((e) => e.kind === "tool" && e.name === name);
+      if (idx === -1) return {};
+      const realIdx = state.timeline.length - 1 - idx;
+      const target = state.timeline[realIdx];
+      if (target.kind !== "tool") return {};
+      const timeline = [...state.timeline];
+      timeline[realIdx] = { ...target, sources };
+      return { timeline };
+    }),
 
   toggleVoiceOutput: () => set((state) => ({ voiceOutputEnabled: !state.voiceOutputEnabled })),
   setPendingInput: (text) => set({ pendingInput: text }),

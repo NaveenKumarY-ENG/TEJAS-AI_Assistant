@@ -3,7 +3,6 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { EnergySphere } from "./EnergySphere";
 import { ParticleField } from "./ParticleField";
-import { EnergyArcs } from "./EnergyArcs";
 import { OuterShell } from "./OuterShell";
 import { ScanPulse } from "./ScanPulse";
 import { BackgroundField } from "./BackgroundField";
@@ -52,7 +51,6 @@ function Scene({ coreState, intensityRef }: { coreState: CoreState; intensityRef
       <ambientLight intensity={0.12} />
       <EnergySphere intensityRef={intensityRef} colorA={CORE_COLORS.a} colorB={CORE_COLORS.b} />
       <ParticleField intensityRef={intensityRef} color={CORE_COLORS.amber} />
-      <EnergyArcs intensityRef={intensityRef} color={CORE_COLORS.b} />
       <OuterShell intensityRef={intensityRef} color={CORE_COLORS.a} />
       <ScanPulse intensityRef={intensityRef} color={CORE_COLORS.a} />
     </>

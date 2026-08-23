@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Mic2 } from "lucide-react";
 import { useAssistantStore } from "../../store/assistantStore";
 
@@ -12,8 +12,24 @@ export function VoiceSelector({ onError }: { onError: (message: string) => void 
   const setActiveTtsVoice = useAssistantStore((s) => s.setActiveTtsVoice);
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   const active = ttsVoices.find((v) => v.id === ttsVoiceId);
+
+  // Document-level listener + ref instead of a "fixed inset-0" overlay — see
+  // ModelSelector.tsx's comment: that overlay ties in z-index with
+  // ConversationPanel's wrapper and loses the DOM-order tiebreak, so it
+  // never actually received clicks in the chat/hologram area.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [open]);
 
   if (ttsVoices.length === 0) return null;
 
@@ -38,7 +54,7 @@ export function VoiceSelector({ onError }: { onError: (message: string) => void 
   };
 
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -52,23 +68,20 @@ export function VoiceSelector({ onError }: { onError: (message: string) => void 
       </button>
 
       {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <ul className="absolute right-0 z-20 mt-1.5 w-48 overflow-hidden rounded-xl border border-white/[0.08] bg-[#0a0e14]/95 py-1 shadow-[0_0_30px_-8px_rgba(0,229,255,0.3)] backdrop-blur-2xl">
-            {ttsVoices.map((v) => (
-              <li key={v.id}>
-                <button
-                  type="button"
-                  onClick={() => handlePick(v.id)}
-                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[12.5px] text-white/70 transition-colors hover:bg-primary/10 hover:text-white"
-                >
-                  <span className="truncate">{v.label}</span>
-                  {v.id === ttsVoiceId && <Check size={13} strokeWidth={2} className="shrink-0 text-primary" />}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
+        <ul className="absolute right-0 z-20 mt-1.5 w-48 overflow-hidden rounded-xl border border-white/[0.08] bg-[#0a0e14]/95 py-1 shadow-[0_0_30px_-8px_rgba(0,229,255,0.3)] backdrop-blur-2xl">
+          {ttsVoices.map((v) => (
+            <li key={v.id}>
+              <button
+                type="button"
+                onClick={() => handlePick(v.id)}
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[12.5px] text-white/70 transition-colors hover:bg-primary/10 hover:text-white"
+              >
+                <span className="truncate">{v.label}</span>
+                {v.id === ttsVoiceId && <Check size={13} strokeWidth={2} className="shrink-0 text-primary" />}
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

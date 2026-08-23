@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import Markdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
+import { Paperclip } from "lucide-react";
 import { useAssistantStore } from "../../store/assistantStore";
 
 // Only these schemes render as a real, clickable link. Assistant text can
@@ -72,17 +73,28 @@ export function ConversationPanel() {
       {timeline.map((entry) => {
         if (entry.kind === "tool") {
           return (
-            <div
-              key={entry.id}
-              className={`inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-black/40 px-3 py-1.5 font-mono text-[11.5px] backdrop-blur-md ${
-                entry.done ? "text-white/30" : "text-white/70"
-              }`}
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${entry.done ? "bg-white/30" : "bg-success shadow-[0_0_6px_rgba(0,255,200,0.7)]"}`}
-                style={entry.done ? undefined : { animation: "breathe 1.2s ease-in-out infinite" }}
-              />
-              {entry.name.replace(/_/g, " ")}
+            <div key={entry.id} className="flex w-fit flex-col items-start gap-1">
+              <div
+                className={`inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-black/40 px-3 py-1.5 font-mono text-[11.5px] backdrop-blur-md ${
+                  entry.done ? "text-white/30" : "text-white/70"
+                }`}
+              >
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${entry.done ? "bg-white/30" : "bg-success shadow-[0_0_6px_rgba(0,255,200,0.7)]"}`}
+                  style={entry.done ? undefined : { animation: "breathe 1.2s ease-in-out infinite" }}
+                />
+                {entry.name.replace(/_/g, " ")}
+              </div>
+              {/* Citations — which knowledge-base document(s) this reply is
+                  actually grounded in, attached once search_knowledge's
+                  result comes back (see useAssistantSocket.ts's "tool_result"
+                  handler). Absent for every other tool. */}
+              {entry.sources && entry.sources.length > 0 && (
+                <div className="flex items-center gap-1.5 pl-3 text-[11px] text-white/35">
+                  <Paperclip size={10} strokeWidth={1.8} className="shrink-0" />
+                  <span className="truncate">{entry.sources.join(", ")}</span>
+                </div>
+              )}
             </div>
           );
         }

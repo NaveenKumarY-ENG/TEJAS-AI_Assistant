@@ -5,9 +5,12 @@ chromadb>=0.5.0
 python-dotenv>=1.0.0
 requests>=2.31.0
 fastapi>=0.115.0
+pydantic>=2.0.0  # server.py imports this directly (request/response models) — also a fastapi dependency, but pinned explicitly since our own code relies on it
 uvicorn[standard]>=0.32.0
 faster-whisper>=1.0.0
 python-multipart>=0.0.9
+numpy>=1.24.0  # imported directly in agent/tts.py and memory/ocr.py (audio/image array handling) — also pulled in transitively by torch/chromadb, pinned explicitly since our own code relies on it
+pillow>=10.0.0  # imported directly in memory/ocr.py (PIL.Image, for OCR input) — also pulled in transitively by easyocr/kokoro, pinned explicitly since our own code relies on it
 
 # Neural TTS (agent/tts.py) — GPU-accelerated (Kokoro-82M) when CUDA is
 # available, CPU otherwise. Deliberately NOT listing `torch` here: PyPI's
@@ -17,6 +20,26 @@ python-multipart>=0.0.9
 kokoro>=0.9.4
 soundfile>=0.12.1
 tzdata>=2024.1  # zoneinfo has no IANA database on Windows without this — get_current_datetime silently failed for every non-local timezone without it
+
+# Knowledge base (memory/knowledge.py) — pure-Python PDF text extraction, no system deps
+pypdf>=4.0.0
+python-docx>=1.1.0
+beautifulsoup4>=4.12.0
+
+# Folder auto-watch (Phase 4, memory/folder_watch.py) — cross-platform filesystem
+# event monitoring, no system deps
+watchdog>=4.0.0
+
+# OCR (Phase 4, memory/ocr.py) — EasyOCR reuses the same torch/CUDA install already
+# required for neural TTS above; first real use auto-downloads its recognition model
+# (~100MB). Gracefully degrades (see memory/ocr.py's available()) if torch isn't
+# installed, same pattern as neural TTS falling back to the browser voice.
+# WARNING: installing this pulls in its own torch/torchvision resolution, which
+# can silently replace an already-installed CUDA torch with a CPU-only build —
+# always (re)install the pinned CUDA torch/torchvision from README.md's Setup
+# section AFTER `pip install -r requirements.txt`, never before.
+easyocr>=1.7.0
+pymupdf>=1.24.0  # renders scanned PDF pages to images for OCR fallback — no poppler/system dep needed
 
 # Development / testing only
 pytest>=8.0.0

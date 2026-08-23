@@ -24,14 +24,15 @@ import threading
 import webbrowser
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+import requests
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agent import Agent, transcription, tts
 from config import AVAILABLE_MODELS, AVAILABLE_TTS_VOICES, config
-from memory import structured
+from memory import folder_watch, knowledge, ocr, structured
 from tools import ALL_TOOLS
 
 logging.basicConfig(
@@ -138,6 +139,23 @@ async def _warm_up_tts() -> None:
     # the import cost itself.
     threading.Thread(target=tts.warm_up, daemon=True).start()
 
+
+@app.on_event("startup")
+async def _warm_up_ocr() -> None:
+    # Same reasoning as _warm_up_tts above: `import torch`/`import easyocr`
+    # can take several seconds, so this runs concurrently with startup
+    # instead of delaying it or the first /api/meta request.
+    threading.Thread(target=ocr.warm_up, daemon=True).start()
+
+
+@app.on_event("startup")
+async def _start_folder_watchers() -> None:
+    # Reconciles every previously-watched folder against disk (catches
+    # changes made while the server was off) and attaches its live watcher.
+    # Background thread: a large folder's initial scan shouldn't delay
+    # startup or the first request.
+    threading.Thread(target=folder_watch.start_all, daemon=True).start()
+
 FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 
 if FRONTEND_DIST.exists():
@@ -177,11 +195,13 @@ async def meta():
     # worst case from blocking the whole event loop (and the active /ws
     # chat with it), matching the same pattern /api/tts already uses.
     tts_available = await asyncio.to_thread(tts.available)
+    ocr_available = await asyncio.to_thread(ocr.available)
     return {
         "assistant_name": config.assistant_name,
         "model": config.active_model,
         "tools": [{"name": t.name, "description": t.description} for t in ALL_TOOLS],
         "tts_available": tts_available,
+        "ocr_available": ocr_available,
     }
 
 
@@ -244,6 +264,151 @@ async def delete_session(session_id: int):
 @app.get("/api/reminders")
 async def reminders():
     return {"reminders": structured.list_reminders()}
+
+
+@app.get("/api/knowledge")
+async def list_documents():
+    return {"documents": structured.list_documents()}
+
+
+def _parse_tags(raw: str) -> list[str]:
+    """Comma-separated form field -> a clean list, e.g. 'work, q3 ' -> ['work', 'q3']."""
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+@app.post("/api/knowledge")
+async def upload_document(file: UploadFile = File(...), tags: str = Form("")):
+    """Ingest a document into the knowledge base — see memory/knowledge.py.
+    Runs off the event loop (asyncio.to_thread) since embedding a whole
+    document takes real time, same reasoning as /api/tts and /api/meta's
+    tts.available() fix earlier this project."""
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="No file received")
+    try:
+        doc = await asyncio.to_thread(
+            knowledge.ingest_document, file.filename or "untitled", data, _parse_tags(tags)
+        )
+    except (knowledge.UnsupportedFileType, knowledge.OCRUnavailable, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Document ingestion failed")
+        raise HTTPException(status_code=500, detail="Failed to process document")
+    return doc
+
+
+@app.delete("/api/knowledge/{document_id}")
+async def delete_document(document_id: int):
+    # Folder-sourced documents are managed by the watcher, not the UI's
+    # delete button — see memory/structured.py's source_type comment for why
+    # allowing a manual delete here would just leave the DB out of sync.
+    existing = next((d for d in structured.list_documents() if d["id"] == document_id), None)
+    if existing and existing["source_type"] == "folder":
+        raise HTTPException(
+            status_code=400,
+            detail="This document is managed by a watched folder — remove the file or stop watching the folder instead.",
+        )
+    deleted = await asyncio.to_thread(knowledge.delete_document, document_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"deleted": document_id}
+
+
+class TagsUpdateRequest(BaseModel):
+    tags: list[str]
+
+
+@app.patch("/api/knowledge/{document_id}/tags")
+async def set_document_tags(document_id: int, payload: TagsUpdateRequest):
+    """Retag a document in place — avoids re-uploading (which would re-run
+    extraction/chunking/embedding) just to fix a label."""
+    updated = await asyncio.to_thread(knowledge.update_tags, document_id, payload.tags)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"id": document_id, "tags": payload.tags}
+
+
+@app.get("/api/knowledge/search")
+async def search_knowledge_base(q: str):
+    """In-app search — the same memory.knowledge.search() the search_knowledge
+    tool calls, exposed directly so the Knowledge panel can search without
+    going through a chat turn."""
+    results = await asyncio.to_thread(knowledge.search, q)
+    return {"results": results}
+
+
+class UrlIngestRequest(BaseModel):
+    url: str
+    tags: list[str] = []
+
+
+@app.post("/api/knowledge/url")
+async def ingest_url(payload: UrlIngestRequest):
+    """Ingest a web page into the knowledge base — see
+    memory.knowledge.ingest_url. JSON body (not multipart like the file
+    upload endpoint above), so this is a separate route rather than
+    overloading POST /api/knowledge with two different content types."""
+    try:
+        doc = await asyncio.to_thread(knowledge.ingest_url, payload.url, payload.tags)
+    except (knowledge.UnsupportedFileType, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except requests.RequestException as e:
+        raise HTTPException(status_code=400, detail=f"Couldn't fetch that URL: {e}")
+    except Exception:
+        logger.exception("URL ingestion failed")
+        raise HTTPException(status_code=500, detail="Failed to process URL")
+    return doc
+
+
+class NoteIngestRequest(BaseModel):
+    title: str
+    text: str
+    tags: list[str] = []
+
+
+@app.post("/api/knowledge/note")
+async def ingest_note(payload: NoteIngestRequest):
+    """Add a manually-written note to the knowledge base — see
+    memory.knowledge.ingest_note."""
+    try:
+        doc = await asyncio.to_thread(knowledge.ingest_note, payload.title, payload.text, payload.tags)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Note ingestion failed")
+        raise HTTPException(status_code=500, detail="Failed to save note")
+    return doc
+
+
+@app.get("/api/knowledge/folders")
+async def list_watched_folders():
+    return {"folders": await asyncio.to_thread(folder_watch.list_folders)}
+
+
+class FolderWatchRequest(BaseModel):
+    path: str
+
+
+@app.post("/api/knowledge/folders")
+async def watch_folder(payload: FolderWatchRequest):
+    """Start watching a folder on this machine — see memory/folder_watch.py.
+    The initial scan runs in a background thread, so this returns as soon as
+    the folder is registered; ingested files show up in the document list a
+    little after."""
+    try:
+        folder = await asyncio.to_thread(folder_watch.add_folder, payload.path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return folder
+
+
+@app.delete("/api/knowledge/folders/{folder_id}")
+async def unwatch_folder(folder_id: int):
+    """Stop watching a folder and delete every document it produced."""
+    removed = await asyncio.to_thread(folder_watch.remove_folder, folder_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Watched folder not found")
+    return {"deleted": folder_id}
 
 
 @app.post("/api/transcribe")
@@ -320,6 +485,14 @@ async def websocket_endpoint(websocket: WebSocket):
                         user_input,
                         on_chunk=lambda piece: send({"type": "chunk", "text": piece}),
                         on_tool=lambda name: send({"type": "tool", "name": name}),
+                        # Scoped to just search_knowledge (for citations) —
+                        # other tools' raw results (execute_python/file_ops
+                        # output, etc.) have no UI use yet and could be large.
+                        on_tool_result=lambda name, result: (
+                            send({"type": "tool_result", "name": name, "result": result})
+                            if name == "search_knowledge"
+                            else None
+                        ),
                     )
                     send({"type": "done"})
                 except Exception as e:

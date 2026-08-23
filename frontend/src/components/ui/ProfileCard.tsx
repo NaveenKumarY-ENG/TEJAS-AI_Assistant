@@ -40,8 +40,9 @@ export function ProfileCard() {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // ModelSelector/VoiceSelector close on outside-click via a "fixed inset-0"
-  // overlay div — that trick breaks here: this component sits inside
+  // A "fixed inset-0" click-outside overlay (what ModelSelector/VoiceSelector
+  // originally used too, before hitting their own version of this problem)
+  // breaks here for a different reason: this component sits inside
   // Sidebar's <aside>, which has backdrop-blur-2xl, and a backdrop-filter
   // (like a regular filter or transform) on an ancestor makes IT the
   // containing block for any `position: fixed` descendant, per the CSS

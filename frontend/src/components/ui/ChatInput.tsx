@@ -143,8 +143,9 @@ export function ChatInput({
         ref={textareaRef}
         rows={1}
         value={value}
+        disabled={disabled}
         placeholder={listening || processing ? "" : "Ask me anything..."}
-        className="max-h-40 flex-1 resize-none bg-transparent py-2 text-[15px] text-white placeholder:text-white/35 focus:outline-none"
+        className="max-h-40 flex-1 resize-none bg-transparent py-2 text-[15px] text-white placeholder:text-white/35 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         onChange={(e) => {
           setValue(e.target.value);
           e.target.style.height = "auto";

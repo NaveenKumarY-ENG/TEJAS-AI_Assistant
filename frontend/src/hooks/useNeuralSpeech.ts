@@ -158,8 +158,23 @@ export function useNeuralSpeech(onQueueDrained?: () => void) {
       await playAudio(blob, generation);
     } catch (err) {
       if (generation !== generationRef.current) return;
-      console.error("Neural TTS failed, falling back to browser voice for this sentence:", err);
-      await speakViaBrowserFallback(next, generation);
+      // Browsers block audio.play() with NotAllowedError until the page has
+      // had a real user gesture — guaranteed to happen on the auto-spoken
+      // greeting, which fires on a timer with no click/keypress yet. That's
+      // not "TTS is broken," it's "not allowed to speak yet" — falling back
+      // to the browser's own SpeechSynthesis here would still "work," but
+      // with whatever voice the OS/browser defaults to (commonly female),
+      // silently overriding the user's configured male neural voice for
+      // that one sentence. Skipping it entirely (not speaking that sentence
+      // at all) is the correct fail-soft behavior for THIS failure — every
+      // real chat reply happens after the user has already clicked/typed,
+      // so it never hits this path; only the unrequested auto-greeting can.
+      if (err instanceof DOMException && err.name === "NotAllowedError") {
+        console.warn("Neural TTS blocked (no user interaction yet) — skipping this sentence rather than misvoicing it:", err);
+      } else {
+        console.error("Neural TTS failed, falling back to browser voice for this sentence:", err);
+        await speakViaBrowserFallback(next, generation);
+      }
     }
 
     if (generation === generationRef.current) pump();

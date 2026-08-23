@@ -156,11 +156,15 @@ class Agent:
             vector.remember(f"User: {user_input}\nAssistant: {final_text}")
         return final_text
 
-    def chat_streaming(self, user_input: str, on_chunk, on_tool=None) -> str:
+    def chat_streaming(self, user_input: str, on_chunk, on_tool=None, on_tool_result=None) -> str:
         """
-        Streaming turn: calls on_chunk(text) as each piece arrives, and
-        on_tool(name) when a tool is invoked. Tool-calling iterations produce
-        no user-visible text; only the final answer streams.
+        Streaming turn: calls on_chunk(text) as each piece arrives, on_tool(name)
+        when a tool is about to run, and on_tool_result(name, result) once it
+        returns. Tool-calling iterations produce no user-visible text; only
+        the final answer streams. on_tool_result is generic (fires for any
+        tool) — the caller (server.py) decides which tools' results are
+        actually worth sending to the frontend (e.g. search_knowledge, for
+        citations) rather than that being baked in here.
         """
         self._record("user", user_input)
         self._trim_history()
@@ -203,6 +207,8 @@ class Agent:
                     on_tool(fn["name"])
                 result = execute_tool(fn["name"], fn.get("arguments", {}))
                 logger.debug("Tool %s -> %s", fn["name"], str(result)[:200])
+                if on_tool_result:
+                    on_tool_result(fn["name"], result)
                 self._record("tool", result, name=fn["name"])
 
             messages = list(self.history)

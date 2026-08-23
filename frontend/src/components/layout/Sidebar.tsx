@@ -19,7 +19,7 @@ const NAV_ITEMS = [
   { icon: Home, label: "Home" },
   { icon: SquarePen, label: "Chats", action: "newChat" as const },
   { icon: Mic, label: "Voice", action: "voice" as const },
-  { icon: BookOpen, label: "Knowledge", soon: true },
+  { icon: BookOpen, label: "Knowledge", action: "knowledge" as const },
   { icon: FolderKanban, label: "Projects", soon: true },
   { icon: Zap, label: "Automation", soon: true },
   { icon: BarChart3, label: "Analytics", soon: true },
@@ -31,6 +31,8 @@ export function Sidebar({
   onNewChat,
   onEnterVoice,
   voiceModeActive,
+  onEnterKnowledge,
+  knowledgePanelActive,
   onQuickAction,
   quickActionsDisabled,
 }: {
@@ -38,6 +40,8 @@ export function Sidebar({
   onNewChat: () => void;
   onEnterVoice: () => void;
   voiceModeActive: boolean;
+  onEnterKnowledge: () => void;
+  knowledgePanelActive: boolean;
   onQuickAction: (q: string) => void;
   quickActionsDisabled: boolean;
 }) {
@@ -63,7 +67,13 @@ export function Sidebar({
         <nav className="space-y-2">
           {NAV_ITEMS.map((item) => {
             const isActive =
-              item.label === "Home" ? !voiceModeActive : item.label === "Voice" ? voiceModeActive : false;
+              item.label === "Home"
+                ? !voiceModeActive && !knowledgePanelActive
+                : item.label === "Voice"
+                  ? voiceModeActive
+                  : item.label === "Knowledge"
+                    ? knowledgePanelActive
+                    : false;
             return (
             <button
               key={item.label}
@@ -71,6 +81,7 @@ export function Sidebar({
               onClick={() => {
                 if (item.action === "newChat") onNewChat();
                 else if (item.action === "voice") onEnterVoice();
+                else if (item.action === "knowledge") onEnterKnowledge();
                 else if (item.soon) onSoonClick(item.label);
               }}
               className={`group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-[13px] transition-all ${

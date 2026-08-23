@@ -4,7 +4,7 @@
 
 TEJAS is a full-stack personal AI assistant with a sci-fi, JARVIS-style holographic interface. It runs entirely on your own machine by default (local LLM via Ollama, local speech-to-text via Whisper, local SQLite/ChromaDB memory), with optional cloud backends (Anthropic Claude, OpenAI Whisper) you can switch on when you want stronger reasoning or accuracy.
 
-It talks back and forth by text or voice, remembers context across sessions, and can actually *do* things — search the web, check the weather, run Python, manage files in a sandbox, and track reminders — via a small, pluggable tool system.
+It talks back and forth by text or voice, remembers context across sessions, and can actually *do* things — search the web, check the weather, run Python, manage files in a sandbox, track reminders, and search your own uploaded documents — via a small, pluggable tool system.
 
 ## Features
 
@@ -12,9 +12,10 @@ It talks back and forth by text or voice, remembers context across sessions, and
 - **Voice input** — click the mic, speak, and it transcribes and sends automatically (local Whisper by default, no cloud dependency).
 - **Voice output** — TEJAS speaks its replies aloud (toggle on/off in the top bar); works for both typed and spoken questions. A real neural voice (Kokoro-82M, GPU-accelerated via CUDA when available) runs server-side by default, falling back automatically to the browser's built-in voice if the neural backend isn't installed/available or a request fails. Switchable live between 3 voices (2 male, 1 female — see the voice selector next to the model switcher in the top bar and in Voice Mode) with no restart needed.
 - **Fullscreen Voice Mode** (sidebar → Voice) — a dedicated, hands-free conversation view: it auto-listens again after each reply via real voice-activity detection, and can run a different model just for voice (e.g. a faster local one) than whatever Chat has active, swapping back automatically when you exit.
-- **Tool use** — the model can call real tools (web search, weather, date/time, system info, sandboxed file I/O, sandboxed Python execution, reminders, fact memory) instead of guessing.
+- **Tool use** — the model can call real tools (web search, weather, date/time, system info, sandboxed file I/O, sandboxed Python execution, reminders, fact memory, knowledge base search) instead of guessing.
 - **Session history** — chats persist in SQLite; pick up an old conversation, start a new one, or delete one you no longer need, Claude-style.
-- **Semantic memory** — relevant snippets from past conversations are recalled automatically via a ChromaDB vector store (with safeguards so stale, point-in-time facts like "today's weather" never get recalled as if still true).
+- **Semantic memory** — relevant snippets from past conversations are recalled automatically via a ChromaDB vector store (with safeguards so stale, point-in-time facts like "today's weather" never get recalled as if still true). Recall is also distance-thresholded (`memory/vector.py`) — an unrelated question doesn't drag in the closest-available-but-irrelevant past exchange just because *something* has to be nearest; if nothing genuinely relevant exists, recall comes back empty instead.
+- **Knowledge base** (sidebar → Knowledge) — upload `.txt`/`.md`/`.pdf`/`.docx`/`.png`/`.jpg`/`.jpeg` documents, paste a URL to ingest a web page directly (boilerplate — nav/header/footer — stripped before indexing), or jot a manual note with no file needed at all; TEJAS chunks, embeds, and can search all of it via the `search_knowledge` tool to answer questions from your own material. Images and scanned/image-only PDF pages are read via OCR (EasyOCR, GPU-accelerated on the same CUDA setup as voice output — `memory/ocr.py`). Point it at a folder on this machine (Watched folders, in the panel) and it stays in sync automatically — new files ingested, changed files re-indexed, deleted files removed, live, no re-upload ever needed (`memory/folder_watch.py`). Replies grounded in the knowledge base show which document(s) they actually came from, right under the tool-call pill in the chat. Tag anything at creation time or retag it later (no re-upload/re-embedding needed) for lightweight organization, and use the in-app search box to browse the knowledge base's actual content directly, without going through chat. A deliberately separate ChromaDB collection from conversation memory above — an uploaded document is a trusted source, a recalled chat snippet isn't, and mixing the two risks a wrong recalled answer compounding itself as if it were verified fact (`memory/knowledge.py`). Search is also distance-thresholded, same as conversation memory above — a query with nothing genuinely relevant in the knowledge base returns no results rather than whatever chunk happens to be *closest*, which matters in particular for a low-quality chunk (e.g. noisy OCR text) that could otherwise look spuriously relevant to unrelated questions.
 - **Switchable LLM backends** — local Ollama (Qwen 2.5, Llama 3.1, Gemma 2, ...), Anthropic Claude, or Google Gemini (hosted, stronger tool-calling; Gemini has a free tier with no billing/card required), swappable live from a dropdown in the top bar, no restart needed.
 - **Dual STT backends** — local faster-whisper (free, offline) or OpenAI's Whisper API, with automatic fallback to local if the cloud call fails.
 - **Quick actions** — one-click canned prompts (weather, web search, system check, reminders, memory, timezone lookups, quick calculations) in the sidebar for instant access without typing.
@@ -58,16 +59,20 @@ tejas-assistant/
 │   ├── system_info.py        # Read-only host OS/CPU/disk info
 │   ├── file_ops.py           # Sandboxed read/write/list files
 │   ├── code_exec.py          # Sandboxed Python execution
-│   └── memory_tool.py        # Reminders + user-fact memory
+│   ├── memory_tool.py        # Reminders + user-fact memory
+│   └── knowledge_tool.py     # Search uploaded knowledge-base documents
 ├── memory/
-│   ├── structured.py         # SQLite: sessions, messages, reminders, facts
-│   └── vector.py             # ChromaDB: semantic recall of past conversations
+│   ├── structured.py         # SQLite: sessions, messages, reminders, facts, documents, watched folders
+│   ├── vector.py             # ChromaDB: semantic recall of past conversations
+│   ├── knowledge.py          # ChromaDB: uploaded document chunks (separate collection)
+│   ├── ocr.py                 # EasyOCR: image/scanned-PDF text extraction for the knowledge base
+│   └── folder_watch.py       # watchdog: keeps a watched folder's documents in sync live
 ├── frontend/                 # React/Three.js dashboard (Vite)
 │   └── src/
-│       ├── components/       # core/ (hologram), ui/ (chat, widgets), layout/, voice/
+│       ├── components/       # core/ (hologram), ui/ (chat, widgets), layout/, voice/, knowledge/
 │       ├── hooks/             # WebSocket, speech recognition/synthesis, toast
 │       └── store/             # Zustand app state
-├── tests/                    # pytest suite (tools + LLM client translation logic)
+├── tests/                    # pytest suite (tools, LLM client translation, knowledge base, folder watch, vector memory)
 ├── data/                     # SQLite DB, vector store, sandbox dir (created at runtime)
 └── .env.example              # Copy to .env and fill in
 ```
@@ -94,16 +99,19 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # macOS/Linux
 
-# Optional but recommended if you have an NVIDIA GPU: install a CUDA build
-# of torch BEFORE the line below, so neural voice output (TTS_PROVIDER=neural,
-# see Configuration) runs on the GPU instead of CPU. Skipping this step is
-# fine — requirements.txt still installs a working CPU-only torch as a
-# dependency of kokoro, just slower for TTS. Pick the cu1xx tag matching
-# your installed CUDA toolkit (cu121/cu124/...); if unsure, this works for
-# most recent drivers:
-pip install torch --index-url https://download.pytorch.org/whl/cu121
-
 pip install -r requirements.txt
+
+# Optional but recommended if you have an NVIDIA GPU: install a CUDA build of
+# torch AFTER the line above, not before — kokoro (voice output) and easyocr
+# (Knowledge base OCR) both depend on torch, and installing/upgrading either
+# one can silently replace an already-installed CUDA torch with PyPI's
+# default CPU-only wheel to satisfy its own version resolution. Running this
+# last guarantees the CUDA build wins and nothing after it can clobber it.
+# Skipping this step entirely is also fine — everything still works on CPU,
+# just slower for TTS/OCR. Pick the cu1xx tag matching your installed CUDA
+# toolkit (cu121/cu124/...); if unsure, this works for most recent drivers:
+pip install "torch==2.5.1+cu121" "torchvision==0.20.1+cu121" --index-url https://download.pytorch.org/whl/cu121
+
 copy .env.example .env          # Windows: copy, macOS/Linux: cp
 ```
 
@@ -176,7 +184,7 @@ All settings live in `.env` (copy from `.env.example`). Key ones:
 
 ## Available tools
 
-The model decides when to call these — it doesn't guess at things it can look up. Kept to 8 tools (not more) deliberately: on CPU-only local inference, every tool in the schema adds real, measured latency to *every* request (see [Performance notes](#performance-notes) below), so related actions are grouped into one tool with an operation/action parameter rather than split into many single-purpose ones.
+The model decides when to call these — it doesn't guess at things it can look up. Kept to 9 tools (not more) deliberately: on CPU-only local inference, every tool in the schema adds real, measured latency to *every* request (see [Performance notes](#performance-notes) below), so related actions are grouped into one tool with an operation/action parameter rather than split into many single-purpose ones. `search_knowledge` is the one exception worth its slot — the knowledge base (see [Features](#features)) is useless to the model without it.
 
 | Tool | What it does |
 |---|---|
@@ -188,6 +196,7 @@ The model decides when to call these — it doesn't guess at things it can look 
 | `execute_python` | Runs a Python snippet in an isolated subprocess with a timeout |
 | `manage_reminders` | Add, list, or complete reminders — set `action` to `add`/`list`/`complete` |
 | `remember_fact` | Save a fact/preference about you for future recall |
+| `search_knowledge` | Search documents you've uploaded to the knowledge base (sidebar → Knowledge) |
 
 To add a new tool: create a file in `tools/`, subclass `Tool` (see `tools/base.py`), and add one line to `tools/__init__.py`.
 
@@ -197,13 +206,23 @@ The frontend talks to `server.py` over one WebSocket plus a handful of REST endp
 
 | Endpoint | Purpose |
 |---|---|
-| `WS /ws` | The chat itself. Send `{"text": "..."}`; receive a stream of `{"type": "chunk\|tool\|done\|error", ...}` events. Optional `?session_id=<id>` or `?resume=1` query params pick which session to attach to. |
-| `GET /api/meta` | Assistant name, active model, full tool list (name + description), and whether neural TTS is available (`tts_available`) — what the UI header/status panel reads on load, and what decides which voice engine the frontend uses. |
+| `WS /ws` | The chat itself. Send `{"text": "..."}`; receive a stream of `{"type": "chunk\|tool\|tool_result\|done\|error", ...}` events. `tool_result` (`{name, result}`) is only ever sent for `search_knowledge` — it's what powers the citation caption under that tool's pill in the chat UI. Optional `?session_id=<id>` or `?resume=1` query params pick which session to attach to. |
+| `GET /api/meta` | Assistant name, active model, full tool list (name + description), whether neural TTS is available (`tts_available`), and whether OCR is available (`ocr_available`) — what the UI header/status panel reads on load, and what decides which voice engine the frontend uses. |
 | `GET /api/models` | All models in `AVAILABLE_MODELS` plus which one is currently active. |
 | `POST /api/models` | Switch the active model. Body: `{"id": "<model id from /api/models>"}`. Takes effect on the next chat turn. |
 | `GET /api/sessions` | Recent sessions with message counts, newest first. |
 | `DELETE /api/sessions/{id}` | Delete a session and its messages. 404 if it doesn't exist. |
 | `GET /api/reminders` | Active (not-yet-completed) reminders. |
+| `GET /api/knowledge` | List uploaded knowledge-base documents (id, filename, chunk count, tags, source type, upload date). A URL-ingested entry's "filename" is the URL itself; a note's is its title. |
+| `POST /api/knowledge` | Multipart file upload (`file` field, `.txt`/`.md`/`.pdf`/`.docx`/`.png`/`.jpg`/`.jpeg`, optional `tags` field — comma-separated) → chunked, embedded, and indexed. Images and scanned/image-only PDF pages are OCR'd (`memory/ocr.py`) when OCR is available. Returns the new document's metadata. 400 for an unsupported type, no extractable text, or OCR being unavailable for an image. |
+| `POST /api/knowledge/url` | Body `{"url": "...", "tags": [...]}` → fetches the page, strips boilerplate (nav/header/footer/script/style), chunks and indexes the remaining text. 400 if the URL can't be fetched or has no extractable text. |
+| `POST /api/knowledge/note` | Body `{"title": "...", "text": "...", "tags": [...]}` → chunks and indexes a manually-written note, no file involved. 400 for an empty title or body. |
+| `PATCH /api/knowledge/{id}/tags` | Body `{"tags": [...]}` → replaces a document's tags in place. 404 if it doesn't exist. |
+| `GET /api/knowledge/search?q=...` | The same semantic search `search_knowledge` (the tool) uses, exposed directly — powers the Knowledge panel's in-app search box. Returns `{"results": [{filename, text}, ...]}`. |
+| `DELETE /api/knowledge/{id}` | Delete a document and all its chunks. 404 if it doesn't exist. 400 if it's managed by a watched folder — unwatch the folder or remove the file instead. |
+| `GET /api/knowledge/folders` | List watched folders (id, path, live file count). |
+| `POST /api/knowledge/folders` | Body `{"path": "..."}` → start watching a folder on this machine (`memory/folder_watch.py`); an initial scan ingests what's already there, then new/changed/deleted files stay in sync live. 400 if the path isn't a real folder or is already watched. |
+| `DELETE /api/knowledge/folders/{id}` | Stop watching a folder and delete every document it produced. 404 if it doesn't exist. |
 | `POST /api/transcribe` | Multipart audio upload (`audio` field) → `{"text": "..."}`. Powers the mic button; also usable standalone. |
 | `POST /api/tts` | Body `{"text": "..."}` → `audio/wav` bytes, synthesized by the neural voice (`agent/tts.py`). Only meaningful when `tts_available` is true; the frontend falls back to the browser voice otherwise. |
 | `GET /api/tts/voices` | All voices in `AVAILABLE_TTS_VOICES` plus which one is currently active. |
@@ -256,7 +275,7 @@ End-to-end impact, measured through the real app (not a synthetic benchmark) ove
 
 Two other things in this codebase help further:
 - **`OLLAMA_KEEP_ALIVE`** (`.env`, default `30m`) keeps the model loaded in memory between messages so you don't pay the ~10s reload cost on every turn — Ollama's own default is only 5 minutes.
-- **Tool count is kept to 8** (see [Available tools](#available-tools)) instead of one tool per action — `file_ops` and `manage_reminders` each replace what used to be 3 separate tools, cutting the schema payload ~20% and shaving a proportional amount off the one-time cost of populating the cache. Real trade-off: a multi-purpose tool with an `operation`/`action` parameter is marginally harder for a small local model to call correctly than several clearly-named single-purpose tools — verified live against `qwen2.5:7b` before landing (all 4 operations across both consolidated tools called correctly).
+- **Tool count is kept deliberately low** (9, see [Available tools](#available-tools)) instead of one tool per action — `file_ops` and `manage_reminders` each replace what used to be 3 separate tools, cutting the schema payload ~20% and shaving a proportional amount off the one-time cost of populating the cache. Real trade-off: a multi-purpose tool with an `operation`/`action` parameter is marginally harder for a small local model to call correctly than several clearly-named single-purpose tools — verified live against `qwen2.5:7b` before landing (all 4 operations across both consolidated tools called correctly).
 
 None of this changes the fundamental limit: the *first* processing of ~800 tokens of tool schema on a CPU-only 7B model will always take tens of seconds. If that's not acceptable, `LLM_PROVIDER=anthropic` or `LLM_PROVIDER=gemini` (the latter free, no billing required) don't hit this wall at all — cloud inference processes the same schema in a couple of seconds, every time.
 
