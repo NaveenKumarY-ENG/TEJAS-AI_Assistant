@@ -192,6 +192,153 @@ def test_ingest_note_empty_text_raises():
         pass
 
 
+def test_ingest_document_threads_through_structured_data():
+    fake_fields = {"Name": "Jane Doe", "Aadhaar Number": "1234 5678 9012", "_document_type": "Aadhaar Card"}
+    with patch("memory.knowledge.extraction.extract_structured_fields", return_value=dict(fake_fields)):
+        doc = knowledge.ingest_document("id_card.txt", b"some OCR'd ID card text")
+    try:
+        assert doc["doc_type"] == "Aadhaar Card"
+        assert doc["structured_data"] == {"Name": "Jane Doe", "Aadhaar Number": "1234 5678 9012"}
+        stored = structured.get_document(doc["id"])
+        assert stored["doc_type"] == "Aadhaar Card"
+        assert stored["structured_data"] == {"Name": "Jane Doe", "Aadhaar Number": "1234 5678 9012"}
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_ingest_document_with_no_structured_fields_found():
+    with patch("memory.knowledge.extraction.extract_structured_fields", return_value={"_document_type": "General Document"}):
+        doc = knowledge.ingest_document("essay.txt", b"just a plain prose paragraph")
+    try:
+        assert doc["doc_type"] == "General Document"
+        assert doc["structured_data"] == {}
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_format_structured_table_renders_markdown_table():
+    doc = {
+        "filename": "id_card.txt",
+        "doc_type": "Aadhaar Card",
+        "structured_data": {"Name": "Jane Doe", "Aadhaar Number": "1234 5678 9012"},
+    }
+    table = knowledge.format_structured_table(doc)
+    assert "**id_card.txt** (Aadhaar Card)" in table
+    assert "| Name | Jane Doe |" in table
+    assert "| Aadhaar Number | 1234 5678 9012 |" in table
+
+
+def test_format_structured_table_casts_non_string_values():
+    doc = {"filename": "form.txt", "doc_type": "", "structured_data": {"Amount": 42, "Approved": True}}
+    table = knowledge.format_structured_table(doc)
+    assert "| Amount | 42 |" in table
+    assert "| Approved | True |" in table
+
+
+def test_format_structured_table_sanitizes_newlines_and_pipes():
+    """Regression test: a real newline or "|" inside a cell breaks Markdown
+    table syntax outright — confirmed live, the model worked around a
+    multi-line address by inserting literal "<br>" tags that the chat UI
+    doesn't render as HTML, just as visible junk text. Every row must stay
+    on one line no matter what the extracted value looks like."""
+    doc = {
+        "filename": "id.jpg",
+        "doc_type": "Aadhaar Card",
+        "structured_data": {"Address": "SH4OHABAD ROLD\nLEE Aasm\n60410", "Note": "A | B"},
+    }
+    table = knowledge.format_structured_table(doc)
+    assert "\n" not in table.split("| Address |")[1].split("\n")[0]
+    assert "SH4OHABAD ROLD, LEE Aasm, 60410" in table
+    assert "A / B" in table
+    # Every non-blank line must itself be a single well-formed table row.
+    for line in table.splitlines():
+        assert line.count("\n") == 0
+
+
+def test_document_listing_is_names_and_types_only():
+    """Regression test: the user explicitly wants only filenames/types for
+    "what's in my knowledge base", not full extracted details — confirm the
+    listing never includes structured_data field values."""
+    with patch("memory.knowledge.extraction.extract_structured_fields", return_value={"Name": "Jane Doe", "_document_type": "ID Card"}):
+        doc = knowledge.ingest_document("id_card.txt", b"some content")
+    try:
+        listing = knowledge.document_listing()
+        assert "id_card.txt (ID Card)" in listing
+        assert "Jane Doe" not in listing
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_document_listing_empty_when_no_documents():
+    assert knowledge.document_listing() == ""
+
+
+def test_search_returns_structured_table_for_documents_with_fields():
+    fake_fields = {"Name": "Jane Doe", "PAN Number": "ABCDE1234F", "_document_type": "PAN Card"}
+    with patch("memory.knowledge.extraction.extract_structured_fields", return_value=dict(fake_fields)):
+        doc = knowledge.ingest_document("pan_card.txt", b"some OCR'd PAN card text mentioning Jane Doe")
+    try:
+        results = knowledge.search("what is on the PAN card")
+        assert len(results) == 1
+        assert results[0]["filename"] == "pan_card.txt"
+        assert "| Name | Jane Doe |" in results[0]["text"]
+        assert "| PAN Number | ABCDE1234F |" in results[0]["text"]
+        # The raw OCR text must NOT leak through once structured data exists.
+        assert "some OCR'd PAN card text" not in results[0]["text"]
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_search_still_returns_raw_text_for_unstructured_documents():
+    doc = knowledge.ingest_document("notes.txt", b"The launch code is zebra-quartz-77.")
+    try:
+        results = knowledge.search("what is the launch code")
+        assert len(results) == 1
+        assert results[0]["text"] == "The launch code is zebra-quartz-77."
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_search_finds_document_by_filename_alone_even_with_no_semantic_overlap():
+    """Regression test: a bare, semantically-empty filename (a hex hash, the
+    kind a phone gives a downloaded photo) used to return zero results even
+    though the document obviously exists and is exactly what's being asked
+    about — confirmed live against a real Aadhaar-card upload. A literal
+    filename reference must always count as relevant, independent of
+    embedding distance."""
+    fake_fields = {"Name": "Jane Doe", "_document_type": "ID Card"}
+    with patch("memory.knowledge.extraction.extract_structured_fields", return_value=dict(fake_fields)), patch(
+        "memory.knowledge.ocr.available", return_value=True
+    ), patch(
+        "memory.knowledge.ocr.image_to_text", return_value="some OCR'd ID card text with no relation to the filename"
+    ):
+        doc = knowledge.ingest_document("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.jpg", b"fake jpeg bytes")
+    try:
+        # The bare filename alone — no descriptive words, nothing for
+        # semantic search to latch onto.
+        results = knowledge.search("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.jpg")
+        assert len(results) == 1
+        assert results[0]["filename"] == "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.jpg"
+        assert "| Name | Jane Doe |" in results[0]["text"]
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_search_filename_mention_does_not_suppress_genuinely_irrelevant_documents():
+    """The filename exemption is per-document, not global — mentioning one
+    document's filename shouldn't make an unrelated document's content
+    suddenly pass the relevance bar too."""
+    doc1 = knowledge.ingest_document("report.txt", b"Quarterly revenue grew by twelve percent this year.")
+    doc2 = knowledge.ingest_document("unrelated.txt", b"My favorite pizza topping is pineapple.")
+    try:
+        results = knowledge.search("what does report.txt say about the weather forecast")
+        filenames = {r["filename"] for r in results}
+        assert "unrelated.txt" not in filenames
+    finally:
+        knowledge.delete_document(doc1["id"])
+        knowledge.delete_document(doc2["id"])
+
+
 def test_ingest_image_raises_ocr_unavailable_when_ocr_missing():
     with patch("memory.knowledge.ocr.available", return_value=False):
         try:

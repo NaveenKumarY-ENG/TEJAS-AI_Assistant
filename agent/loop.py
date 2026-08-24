@@ -17,7 +17,7 @@ import re
 
 from agent.llm_client import call_llm, call_llm_streaming
 from config import config
-from memory import structured, vector
+from memory import knowledge, structured, vector
 from tools import execute_tool, get_tool_schemas
 
 logger = logging.getLogger("assistant.loop")
@@ -29,6 +29,17 @@ logger = logging.getLogger("assistant.loop")
 # is exactly how a wrong date, once stated, kept reappearing in every future
 # session even after the underlying date logic was fixed. Turns that used
 # one of these tools are excluded from vector.remember() entirely.
+#
+# Knowledge-base-grounded turns get the same treatment (see the
+# used_knowledge_base checks in chat()/chat_streaming() below), for the
+# identical reason discovered live: a document's extracted data can change
+# (re-extraction with an improved prompt, a retag, a re-upload) or the
+# document can be deleted outright, and a memorized old answer doesn't know
+# that happened — confirmed hitting this exact bug: the model's own
+# once-garbled answer about an ID card got memorized, and kept getting
+# recalled and repeated verbatim even after the underlying extraction was
+# fixed to be accurate, because the "fix" only touched the source of truth,
+# not the stale copy already sitting in semantic memory.
 VOLATILE_TOOLS = {"get_weather", "get_current_datetime", "get_system_info"}
 
 # The current date/time is now grounded directly in the outgoing prompt (see
@@ -48,6 +59,27 @@ _VOLATILE_QUERY_RE = re.compile(
 
 def _is_volatile_query(text: str) -> bool:
     return bool(_VOLATILE_QUERY_RE.search(text))
+
+
+# A "what's in my knowledge base" / "what do you have" question is answered
+# from knowledge.document_listing() (see _messages_for_llm), not from
+# knowledge.search() — nothing in a document's own chunk text says "here is
+# the complete list of documents," so kb_results comes back empty for this
+# kind of question and the kb_results-based memorization guard below misses
+# it entirely. Confirmed live: exactly this happened — an old listing answer
+# (from when the knowledge base held different documents) got memorized,
+# and kept being recalled and blended into new listing answers even after
+# the documents changed, producing inconsistent replies (sometimes correct,
+# sometimes naming documents that had long since been deleted). The listing
+# is exactly as volatile as VOLATILE_TOOLS/_is_volatile_query above — same
+# fix, same reasoning. "vase" covers a real observed typo/mishearing of
+# "base"; matching broadly is safe here since a false positive only means
+# "skip remembering."
+_KNOWLEDGE_LISTING_RE = re.compile(r"knowledge\s*(base|vase)", re.IGNORECASE)
+
+
+def _is_knowledge_listing_query(text: str) -> bool:
+    return bool(_KNOWLEDGE_LISTING_RE.search(text))
 
 
 class Agent:
@@ -109,22 +141,65 @@ class Agent:
 
         self.history = trimmed
 
-    def _messages_for_llm(self, user_input: str) -> list[dict]:
+    def _messages_for_llm(self, user_input: str) -> tuple[list[dict], list[dict]]:
         """
         Build the payload sent to the model: history, with the live date/
-        time and any recalled memory context attached to the latest user
-        turn only.
+        time, any recalled memory context, and any relevant knowledge-base
+        content attached to the latest user turn only.
 
-        The returned list is a throwaway copy - self.history is untouched,
-        so the enriched text is never persisted or shown to the user. The
-        live clock lives here rather than in the system prompt (see
-        config.static_system_prompt) specifically so the system prompt
+        The returned messages list is a throwaway copy - self.history is
+        untouched, so the enriched text is never persisted or shown to the
+        user. The live clock lives here rather than in the system prompt
+        (see config.static_system_prompt) specifically so the system prompt
         stays byte-identical across calls — Ollama caches the KV state for
         a matching prompt prefix, and reusing that cache (instead of
         reprocessing the tool schema from scratch every time) cuts real
         response time roughly 3x, confirmed by direct testing.
+
+        Also returns the raw knowledge-base results (possibly []), so
+        chat_streaming can fire on_tool/on_tool_result for the citation UI
+        even though nothing "called" search_knowledge this turn.
+
+        Knowledge-base search runs unconditionally every turn, exactly like
+        vector.recall() below — not gated on any regex heuristic. An
+        earlier version of this only searched when the message looked like
+        it named a specific file, and separately just *asked* the model to
+        call search_knowledge as a tool when it did — both were confirmed
+        live, repeatedly, to be unreliable on a 7B local model: it would
+        still sometimes skip the tool call and fabricate a "couldn't find
+        anything" answer. Never leaving that decision to the model at all
+        (same reasoning that already applies to memory recall — the model
+        doesn't "decide" to remember things either) is the actual fix.
+        knowledge.search()'s own relevance threshold means an unrelated turn
+        just gets nothing injected, same as vector.recall() returning [].
         """
         parts = [config.current_time_context()]
+
+        listing = knowledge.document_listing()
+        if listing:
+            parts.append("Documents currently in the knowledge base (for reference — use search_knowledge or the content below for details on any of them):\n" + listing)
+
+        kb_results = knowledge.search(user_input, n_results=3)
+        if kb_results:
+            parts.append(
+                "Relevant content from the knowledge base:\n" + knowledge.format_search_results(kb_results)
+            )
+            logger.debug("Injected %d knowledge-base result(s)", len(kb_results))
+            if any(knowledge.is_structured_table(r["text"]) for r in kb_results):
+                # The exact table(s) get appended verbatim after this reply
+                # (see chat_streaming) — the model only needs to write a
+                # short intro, never retype the data itself. See
+                # knowledge.is_structured_table's docstring for why this
+                # isn't left to a "present it as-is" instruction alone.
+                parts.append(
+                    "One or more of the knowledge base results above is a document's exact extracted "
+                    "field table. The real table is shown automatically right after your reply — you do "
+                    "not need to, and must NOT, write out any field name or value yourself, in any form "
+                    "(no bullet points, no bold labels, no partial list). Respond with ONLY one short "
+                    "sentence like 'Here are the details:' and then stop generating immediately. Writing "
+                    "even one field yourself means it will appear twice — once wrong from you, once "
+                    "correct from the table."
+                )
 
         recalled = vector.recall(user_input, n_results=3)
         if recalled:
@@ -138,7 +213,7 @@ class Agent:
         messages.append(
             {"role": "user", "content": f"{context}\n\nUser's message: {user_input}"}
         )
-        return messages
+        return messages, kb_results
 
     # ------------------------------------------------------------------
     # Chat entry points
@@ -149,10 +224,20 @@ class Agent:
         self._record("user", user_input)
         self._trim_history()
 
-        messages = self._messages_for_llm(user_input)
-        final_text, used_volatile_tool = self._run_tool_loop(messages)
+        messages, kb_results = self._messages_for_llm(user_input)
+        structured_tables = [r["text"] for r in kb_results if knowledge.is_structured_table(r["text"])]
+        final_text, used_volatile_tool = self._run_tool_loop(messages, structured_tables)
 
-        if not used_volatile_tool and not _is_volatile_query(user_input):
+        # See VOLATILE_TOOLS's comment: a knowledge-base-grounded answer is
+        # a snapshot of the documents as they exist right now, and must be
+        # re-fetched fresh next time, not replayed from memory once they
+        # change (a re-extraction, a retag, a deletion).
+        if (
+            not used_volatile_tool
+            and not kb_results
+            and not _is_volatile_query(user_input)
+            and not _is_knowledge_listing_query(user_input)
+        ):
             vector.remember(f"User: {user_input}\nAssistant: {final_text}")
         return final_text
 
@@ -171,7 +256,26 @@ class Agent:
 
         # First pass uses the memory-enriched payload; later iterations use
         # clean history (the model already has the context from pass one).
-        messages = self._messages_for_llm(user_input)
+        messages, kb_results = self._messages_for_llm(user_input)
+        # Exact document field tables among this turn's results — appended
+        # verbatim after the model's own final text below, rather than
+        # trusted to survive the model retyping them. See
+        # knowledge.is_structured_table's docstring: confirmed live that a
+        # 7B local model will still "helpfully" alter a value (inventing a
+        # plausible-looking date for an illegible OCR field, for instance)
+        # even with an explicit "present this as-is" instruction — the same
+        # instruction-following unreliability already seen with tool-calling,
+        # fixed the same way: don't leave it to the model at all.
+        structured_tables = [r["text"] for r in kb_results if knowledge.is_structured_table(r["text"])]
+        if kb_results:
+            # Fires the same UI events a real search_knowledge tool call
+            # would (tool pill + citation caption) even though nothing
+            # "called" it this turn — see _messages_for_llm's docstring for
+            # why this is proactive rather than tool-call-dependent.
+            if on_tool:
+                on_tool("search_knowledge")
+            if on_tool_result:
+                on_tool_result("search_knowledge", knowledge.format_search_results(kb_results))
         full_text = ""
         used_volatile_tool = False
 
@@ -191,6 +295,11 @@ class Agent:
 
                 if message.get("tool_calls"):
                     tool_calls.extend(message["tool_calls"])
+
+            if not tool_calls and structured_tables:
+                appendix = "\n\n" + "\n\n".join(structured_tables)
+                on_chunk(appendix)
+                chunk_text += appendix
 
             self._record("assistant", chunk_text)
             full_text += chunk_text
@@ -222,7 +331,13 @@ class Agent:
             full_text += msg
 
         final = full_text.strip() or "(no response)"
-        if not used_volatile_tool and not _is_volatile_query(user_input):
+        # See VOLATILE_TOOLS's comment above and chat()'s matching check.
+        if (
+            not used_volatile_tool
+            and not kb_results
+            and not _is_volatile_query(user_input)
+            and not _is_knowledge_listing_query(user_input)
+        ):
             vector.remember(f"User: {user_input}\nAssistant: {final}")
         return final
 
@@ -230,7 +345,7 @@ class Agent:
     # Non-streaming tool loop
     # ------------------------------------------------------------------
 
-    def _run_tool_loop(self, messages: list[dict]) -> tuple[str, bool]:
+    def _run_tool_loop(self, messages: list[dict], structured_tables: list[str] | None = None) -> tuple[str, bool]:
         """Returns (final_text, used_volatile_tool) — see VOLATILE_TOOLS."""
         used_volatile_tool = False
 
@@ -240,6 +355,9 @@ class Agent:
 
             tool_calls = message.get("tool_calls") or []
             content = message.get("content", "")
+
+            if not tool_calls and structured_tables:
+                content = (content or "") + "\n\n" + "\n\n".join(structured_tables)
 
             self._record("assistant", content)
 

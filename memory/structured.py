@@ -86,6 +86,15 @@ def init_db() -> None:
         # to actually remove it.
         if "source_type" not in existing_columns:
             conn.execute("ALTER TABLE documents ADD COLUMN source_type TEXT NOT NULL DEFAULT 'manual'")
+        # Added for structured document extraction (memory/extraction.py) —
+        # NOT the same "structured" as this module's own name (that predates
+        # this and refers to SQLite-backed facts/reminders/sessions); this is
+        # per-document extracted key-value fields, e.g. an ID card's Name/DOB/
+        # ID number. JSON-encoded, same convention as tags.
+        if "structured_data" not in existing_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN structured_data TEXT NOT NULL DEFAULT '{}'")
+        if "doc_type" not in existing_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN doc_type TEXT NOT NULL DEFAULT ''")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS watched_folders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,24 +262,60 @@ def delete_session(session_id: int) -> bool:
 # needs to track individual chunk UUIDs anywhere.
 
 def add_document(
-    filename: str, chunk_count: int, tags: list[str] | None = None, source_type: str = "manual"
+    filename: str,
+    chunk_count: int,
+    tags: list[str] | None = None,
+    source_type: str = "manual",
+    structured_data: dict | None = None,
+    doc_type: str = "",
 ) -> int:
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO documents (filename, chunk_count, tags, source_type, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (filename, chunk_count, json.dumps(tags or []), source_type, datetime.utcnow().isoformat()),
+            "INSERT INTO documents (filename, chunk_count, tags, source_type, structured_data, doc_type, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                filename,
+                chunk_count,
+                json.dumps(tags or []),
+                source_type,
+                json.dumps(structured_data or {}),
+                doc_type,
+                datetime.utcnow().isoformat(),
+            ),
         )
         return cur.lastrowid
+
+
+def _decode_document(doc: dict) -> dict:
+    doc["tags"] = json.loads(doc["tags"])
+    doc["structured_data"] = json.loads(doc["structured_data"])
+    return doc
 
 
 def list_documents() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute("SELECT * FROM documents ORDER BY id DESC").fetchall()
         documents = [dict(r) for r in rows]
-    for doc in documents:
-        doc["tags"] = json.loads(doc["tags"])
-    return documents
+    return [_decode_document(d) for d in documents]
+
+
+def get_document(document_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
+        return _decode_document(dict(row)) if row else None
+
+
+def update_document_structured_data(document_id: int, structured_data: dict, doc_type: str) -> bool:
+    """Overwrite a document's extracted fields in place — used to re-run
+    memory/extraction.py against an already-ingested document (e.g. after
+    improving the extraction prompt) without needing to re-upload the
+    original file."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE documents SET structured_data = ?, doc_type = ? WHERE id = ?",
+            (json.dumps(structured_data), doc_type, document_id),
+        )
+        return cur.rowcount > 0
 
 
 def update_document_tags(document_id: int, tags: list[str]) -> bool:

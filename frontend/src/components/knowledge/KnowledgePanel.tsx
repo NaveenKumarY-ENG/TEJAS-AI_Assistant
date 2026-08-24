@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   BookOpen,
   ChevronDown,
+  ChevronRight,
   FileText,
   Folder,
   FolderPlus,
@@ -24,6 +25,8 @@ interface DocumentItem {
   created_at: string;
   tags: string[];
   source_type: "manual" | "folder";
+  doc_type: string;
+  structured_data: Record<string, string>;
 }
 
 interface SearchResult {
@@ -91,6 +94,7 @@ export function KnowledgePanel({ onExit, ocrAvailable }: { onExit: () => void; o
   const [savingNote, setSavingNote] = useState(false);
 
   const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
+  const [expandedDocId, setExpandedDocId] = useState<number | null>(null);
   const [editingTagsId, setEditingTagsId] = useState<number | null>(null);
   const [tagEditValue, setTagEditValue] = useState("");
 
@@ -650,16 +654,38 @@ export function KnowledgePanel({ onExit, ocrAvailable }: { onExit: () => void; o
                     : `No documents tagged "${activeTagFilter}".`}
                 </p>
               ) : (
-                visibleDocuments.map((doc) => (
+                visibleDocuments.map((doc) => {
+                  const hasStructuredData = Object.keys(doc.structured_data).length > 0;
+                  return (
                   <div key={doc.id} className="rounded-xl border border-white/[0.07] bg-white/[0.015] px-4 py-3">
                     <div className="flex items-center gap-3">
-                      {isUrlSource(doc.filename) ? (
+                      {hasStructuredData ? (
+                        <button
+                          type="button"
+                          onClick={() => setExpandedDocId((id) => (id === doc.id ? null : doc.id))}
+                          aria-label={`${expandedDocId === doc.id ? "Collapse" : "Expand"} extracted fields for ${doc.filename}`}
+                          className="shrink-0 text-primary/70 transition-colors hover:text-primary"
+                        >
+                          {expandedDocId === doc.id ? (
+                            <ChevronDown size={16} strokeWidth={1.8} />
+                          ) : (
+                            <ChevronRight size={16} strokeWidth={1.8} />
+                          )}
+                        </button>
+                      ) : isUrlSource(doc.filename) ? (
                         <LinkIcon size={16} strokeWidth={1.8} className="shrink-0 text-primary/70" />
                       ) : (
                         <FileText size={16} strokeWidth={1.8} className="shrink-0 text-primary/70" />
                       )}
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-[13.5px] text-white/90">{doc.filename}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-[13.5px] text-white/90">{doc.filename}</span>
+                          {doc.doc_type && (
+                            <span className="shrink-0 rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[10px] text-primary/80">
+                              {doc.doc_type}
+                            </span>
+                          )}
+                        </div>
                         <div className="text-[11.5px] text-white/40">
                           {doc.chunk_count} chunk{doc.chunk_count === 1 ? "" : "s"}
                         </div>
@@ -716,8 +742,24 @@ export function KnowledgePanel({ onExit, ocrAvailable }: { onExit: () => void; o
                         </>
                       )}
                     </div>
+
+                    {hasStructuredData && expandedDocId === doc.id && (
+                      <div className="mt-3 overflow-hidden rounded-lg border border-white/[0.08]">
+                        <table className="w-full text-[12px]">
+                          <tbody>
+                            {Object.entries(doc.structured_data).map(([field, value]) => (
+                              <tr key={field} className="border-b border-white/[0.06] last:border-b-0">
+                                <td className="whitespace-nowrap bg-white/[0.02] px-3 py-1.5 align-top text-white/45">{field}</td>
+                                <td className="px-3 py-1.5 text-white/85">{String(value)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
           </>

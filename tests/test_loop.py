@@ -1,0 +1,212 @@
+"""
+Tests for the per-turn context-building logic in agent/loop.py.
+
+Run with: pytest tests/
+"""
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from agent.loop import Agent, _is_knowledge_listing_query, _is_volatile_query
+
+
+def test_is_volatile_query_detects_time_and_weather_questions():
+    assert _is_volatile_query("what's the weather like today")
+    assert _is_volatile_query("what time is it right now")
+    assert _is_volatile_query("how much free space do I have")
+
+
+def test_is_volatile_query_ignores_unrelated_questions():
+    assert not _is_volatile_query("what are the details on my Aadhaar card")
+    assert not _is_volatile_query("explain how neural networks work")
+
+
+def test_is_knowledge_listing_query_detects_real_reported_phrasings():
+    """Every phrasing here was reproduced live and led to a stale listing
+    answer resurfacing (see test_chat_streaming_never_memorizes_a_knowledge_
+    listing_answer below) — this must keep matching all of them."""
+    assert _is_knowledge_listing_query("What do we have in the knowledge base currently?")
+    assert _is_knowledge_listing_query("Can you reach out the knowledge base and tell me what you have currently?")
+    assert _is_knowledge_listing_query("what is available in the knowledge vase")  # observed typo/mishearing
+    assert _is_knowledge_listing_query("what is available in knowledge base")
+
+
+def test_is_knowledge_listing_query_ignores_unrelated_questions():
+    assert not _is_knowledge_listing_query("what does AIML.pdf cover")
+    assert not _is_knowledge_listing_query("explain how neural networks work")
+
+
+def _make_agent() -> Agent:
+    return Agent()  # no session_id/resume -> fresh in-memory session, no real history to load
+
+
+def test_messages_for_llm_searches_knowledge_base_unconditionally():
+    """Regression test for the core fix: knowledge base search must run
+    every turn, not be gated on any keyword/regex heuristic — an earlier
+    version only searched when the message looked like it named a specific
+    file, which a small local model still routinely talked its way around
+    (repeatedly confirmed live). There must be nothing for the model to
+    "decide" here at all."""
+    fake_results = [{"filename": "notes.txt", "text": "The launch code is zebra-quartz-77."}]
+    with patch("agent.loop.knowledge.search", return_value=fake_results) as mock_search:
+        agent = _make_agent()
+        messages, kb_results = agent._messages_for_llm("what's a good pizza topping")
+    mock_search.assert_called_once_with("what's a good pizza topping", n_results=3)
+    assert kb_results == fake_results
+    assert "zebra-quartz-77" in messages[-1]["content"]
+
+
+def test_messages_for_llm_omits_knowledge_section_when_nothing_relevant():
+    with patch("agent.loop.knowledge.search", return_value=[]):
+        agent = _make_agent()
+        messages, kb_results = agent._messages_for_llm("what's a good pizza topping")
+    assert kb_results == []
+    assert "Relevant content from the knowledge base" not in messages[-1]["content"]
+
+
+def test_messages_for_llm_uses_format_search_results_for_the_injected_text():
+    """The injected context must go through the same formatter the
+    search_knowledge tool itself uses, so a document's Markdown table (an ID
+    card's extracted fields) survives intact rather than being reformatted
+    differently by two separate code paths."""
+    fake_results = [{"filename": "id.jpg", "text": "**id.jpg**\n\n| Field | Value |\n|---|---|\n| Name | Jane |"}]
+    with patch("agent.loop.knowledge.search", return_value=fake_results):
+        agent = _make_agent()
+        messages, _ = agent._messages_for_llm("tell me about id.jpg")
+    assert "| Name | Jane |" in messages[-1]["content"]
+
+
+def test_messages_for_llm_includes_document_listing_unconditionally():
+    """Regression test: 'what is available in the knowledge base' is a
+    listing question, not a content query — search() alone can't answer it
+    (no chunk's text says "here is the complete list"). The listing must be
+    ambient, present every turn, same as the search results and recalled
+    memory above it — not dependent on the model deciding to ask for it."""
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value="- report.pdf (Invoice)\n- notes.txt"
+    ):
+        agent = _make_agent()
+        messages, _ = agent._messages_for_llm("what's 2+2")
+    assert "report.pdf (Invoice)" in messages[-1]["content"]
+    assert "Documents currently in the knowledge base" in messages[-1]["content"]
+
+
+def test_messages_for_llm_omits_listing_section_when_knowledge_base_empty():
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ):
+        agent = _make_agent()
+        messages, _ = agent._messages_for_llm("what's 2+2")
+    assert "Documents currently in the knowledge base" not in messages[-1]["content"]
+
+
+def _fake_stream(text: str):
+    """A minimal call_llm_streaming-shaped generator: one chunk, no tool calls."""
+    yield {"message": {"content": text}}
+
+
+def test_chat_streaming_appends_canonical_table_verbatim():
+    """Regression test for the actual reported bug: even with an explicit
+    "present this table as-is" system-prompt instruction, the model itself
+    would still alter values when asked to retype a structured table (e.g.
+    inventing a plausible-looking date for an illegible OCR field that
+    matched nothing in the real source — confirmed live). The real table
+    must reach the user byte-for-byte correct regardless of what the model
+    generates, so it's appended by the code, not generated by the model."""
+    fake_table = "**id.jpg** (Aadhaar Card)\n\n| Field | Value |\n|---|---|\n| Name | Arohaam |"
+    fake_results = [{"filename": "id.jpg", "text": fake_table}]
+    chunks_seen = []
+
+    with patch("agent.loop.knowledge.search", return_value=fake_results), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.call_llm_streaming", return_value=_fake_stream("Here are the details:")
+    ):
+        agent = _make_agent()
+        final = agent.chat_streaming("tell me about id.jpg", on_chunk=chunks_seen.append)
+
+    full_output = "".join(chunks_seen)
+    assert "| Name | Arohaam |" in full_output
+    assert "| Name | Arohaam |" in final
+    # The model's own (short) text is still there too — this is additive,
+    # not a replacement of its reply.
+    assert "Here are the details:" in final
+
+
+def test_chat_streaming_does_not_append_when_no_structured_results():
+    """No structured document matched this turn — nothing should be
+    appended beyond whatever the model itself said."""
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.call_llm_streaming", return_value=_fake_stream("Sure, here's a joke.")
+    ):
+        agent = _make_agent()
+        final = agent.chat_streaming("tell me a joke", on_chunk=lambda _: None)
+    assert final == "Sure, here's a joke."
+
+
+def test_chat_streaming_never_memorizes_a_knowledge_grounded_answer():
+    """Regression test for a real bug found live: a knowledge-base answer
+    got memorized, and kept being recalled and repeated verbatim even after
+    the underlying document's extraction was later corrected — the fix
+    (re-extracting cleaner data) had no effect because the stale answer was
+    still sitting in semantic memory, recalled fresh on every future
+    question. A knowledge-grounded turn must never reach vector.remember(),
+    same principle as VOLATILE_TOOLS (weather/date/etc.) — the source can
+    change (re-extraction, a retag, a deletion), and memory has no way to
+    know that happened."""
+    fake_results = [{"filename": "id.jpg", "text": "some content"}]
+    with patch("agent.loop.knowledge.search", return_value=fake_results), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch(
+        "agent.loop.vector.remember"
+    ) as mock_remember, patch(
+        "agent.loop.call_llm_streaming", return_value=_fake_stream("Here's what it says.")
+    ):
+        agent = _make_agent()
+        agent.chat_streaming("tell me about id.jpg", on_chunk=lambda _: None)
+    mock_remember.assert_not_called()
+
+
+def test_chat_streaming_never_memorizes_a_knowledge_listing_answer():
+    """Regression test for a real bug found live: 'what's in the knowledge
+    base' is answered from knowledge.document_listing(), not
+    knowledge.search() — so kb_results comes back empty and the
+    kb_results-based memorization guard alone doesn't catch it. Confirmed
+    live: an old listing answer (naming documents that had since been
+    deleted) got memorized this way, and kept resurfacing — sometimes
+    correct, sometimes not — for every future 'what's in the knowledge
+    base' question, even after the actual documents changed. This must
+    never be memorized, same as a knowledge.search()-grounded answer."""
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value="- AIML.pdf (General Document)"
+    ), patch("agent.loop.vector.recall", return_value=[]), patch(
+        "agent.loop.vector.remember"
+    ) as mock_remember, patch(
+        "agent.loop.call_llm_streaming",
+        return_value=_fake_stream("You have AIML.pdf in your knowledge base."),
+    ):
+        agent = _make_agent()
+        agent.chat_streaming(
+            "What do we have in the knowledge base currently?", on_chunk=lambda _: None
+        )
+    mock_remember.assert_not_called()
+
+
+def test_chat_streaming_still_memorizes_ordinary_turns():
+    """The exclusion is specific to knowledge-grounded turns — an ordinary
+    chat exchange with nothing relevant in the knowledge base should still
+    be remembered, same as before this fix."""
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch(
+        "agent.loop.vector.remember"
+    ) as mock_remember, patch(
+        "agent.loop.call_llm_streaming", return_value=_fake_stream("Sure, here's a joke.")
+    ):
+        agent = _make_agent()
+        agent.chat_streaming("tell me a joke", on_chunk=lambda _: None)
+    mock_remember.assert_called_once()

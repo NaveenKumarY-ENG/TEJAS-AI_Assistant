@@ -12,8 +12,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
+# Overridable so the test suite can point this at an isolated temp directory
+# instead of the real database — see tests/conftest.py, which sets this env
+# var before anything else gets imported. Without it, tests like "a nonsense
+# query returns no results" are only as reliable as whatever real data
+# happens to be in the live knowledge base at the time (confirmed flaky
+# twice: once against garbled OCR text, again against a real uploaded PDF).
+DATA_DIR = Path(os.getenv("TEJAS_DATA_DIR", str(BASE_DIR / "data")))
+DATA_DIR.mkdir(exist_ok=True, parents=True)
 
 # Models selectable at runtime from the UI (see /api/models in server.py).
 # "id" is what the frontend sends back to select one; local Ollama models
@@ -102,7 +108,16 @@ class Config:
         "a confident-sounding guess that might be wrong. This applies even if you feel sure "
         "you remember the answer: you do not have a way to verify it without the tool, so "
         "say the lookup failed and ask if the user wants you to try again, instead of stating "
-        "unverified facts as if they were reliable.\n\n"
+        "unverified facts as if they were reliable.\n"
+        "- Your context may include a 'Documents currently in the knowledge base' listing and/or "
+        "a 'Relevant content from the knowledge base' section — both already fetched for you "
+        "from the user's own uploaded documents. Use the listing to answer questions about what "
+        "exists (e.g. 'what's in my knowledge base') directly, without calling any tool. Do NOT "
+        "call search_knowledge again if the 'Relevant content' section already answers the "
+        "question — only call it for a genuinely different or more specific query than what's "
+        "already there. If you're told a document's exact field table will be shown "
+        "automatically after your reply, do not retype, reformat, or guess at any of its values "
+        "yourself — just write one short introductory sentence and stop.\n\n"
         "Be concise. Confirm before doing anything destructive or irreversible."
     )
 
