@@ -68,7 +68,7 @@ export function VoiceSelector({ onError }: { onError: (message: string) => void 
       </button>
 
       {open && (
-        <ul className="absolute right-0 z-20 mt-1.5 w-48 overflow-hidden rounded-xl border border-white/[0.08] bg-[#0a0e14]/95 py-1 shadow-[0_0_30px_-8px_rgba(0,229,255,0.3)] backdrop-blur-2xl">
+        <ul className="absolute right-0 z-20 mt-1.5 w-48 overflow-hidden rounded-xl border border-white/[0.08] bg-[#0a0e14]/95 py-1 shadow-[0_0_30px_-8px_color-mix(in_srgb,var(--color-primary)_30%,transparent)] backdrop-blur-2xl">
           {ttsVoices.map((v) => (
             <li key={v.id}>
               <button

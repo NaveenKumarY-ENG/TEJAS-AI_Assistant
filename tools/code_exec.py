@@ -1,7 +1,14 @@
 """
 Sandboxed Python code execution.
-Runs in a subprocess with a timeout and no network/file access beyond the sandbox,
-so a bad or malicious snippet can't take down or escape the assistant process.
+Runs in a subprocess with a timeout and a working directory scoped to the
+sandbox — process isolation and a timeout only, not OS-level sandboxing:
+the subprocess still has the full filesystem/network permissions of the
+user running this app (nothing stops `open("C:/Users/.../secrets.txt")` or
+an outbound request from an executed snippet). Fine for this app's actual
+threat model (a single trusted local user asking their own assistant to run
+a snippet, not arbitrary untrusted code from a third party); the timeout
+and process boundary just mean a bad snippet can't hang or take down the
+assistant process itself.
 """
 import subprocess
 import sys

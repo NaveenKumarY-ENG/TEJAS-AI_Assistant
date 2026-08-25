@@ -10,11 +10,12 @@ const STATUS_TEXT: Record<CoreState, string> = {
   error: "ERROR",
 };
 
-// Cyan = neutral/system state, orange = AI activity, red = error only.
+// Violet = neutral/system state (matches the dashboard's new primary
+// accent), orange = AI activity, red = error only.
 const STATUS_COLOR: Record<CoreState, string> = {
-  idle: "#00e5ff",
-  listening: "#00e5ff",
-  processing: "#00e5ff",
+  idle: "#8b5cf6",
+  listening: "#8b5cf6",
+  processing: "#8b5cf6",
   thinking: "#ff8a2e",
   searching: "#ff8a2e",
   speaking: "#ff8a2e",

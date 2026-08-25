@@ -32,7 +32,7 @@ export function MicButton({
         </>
       )}
       {supported ? (
-        <Mic size={17} strokeWidth={1.8} className={listening ? "text-primary drop-shadow-[0_0_6px_rgba(0,229,255,0.8)]" : undefined} />
+        <Mic size={17} strokeWidth={1.8} className={listening ? "text-primary drop-shadow-[0_0_6px_color-mix(in_srgb,var(--color-primary)_80%,transparent)]" : undefined} />
       ) : (
         <MicOff size={17} strokeWidth={1.8} />
       )}

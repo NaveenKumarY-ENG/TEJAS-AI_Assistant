@@ -194,10 +194,22 @@ export function VoiceMode({ coreState, onSend, stopSpeaking, ttsBoundaryRef, onE
 
   return (
     <div className="fixed inset-0 z-50 bg-[#050505]">
-      <AssistantCore coreState={coreState} />
+      {/* Wider FOV than the Home screen's default (37°) — this view's canvas
+          is the full viewport height (fullscreen overlay, not a confined
+          panel), which otherwise renders the sphere large enough to crowd
+          the hands-free/mic controls anchored below it. emblemHeightClass
+          is scaled down to match (proportionally smaller sphere needs a
+          proportionally smaller emblem) — see AssistantCore's prop docs. */}
+      <AssistantCore coreState={coreState} fov={54} emblemHeightClass="h-[9%]" />
 
       <div className="relative z-10 flex h-full flex-col">
-        <div className="flex items-center justify-between px-8 pt-6">
+        {/* pt-14, not pt-6: AssistantCore's own HUDStatus ("CORE ONLINE" etc.)
+            sits absolutely-positioned at top-5 left-5 inside the hologram
+            layer beneath this row — confirmed live that pt-6 (24px) put the
+            VOICE MODE pill directly on top of it, both badges illegible
+            where they overlapped. Same fix shape as App.tsx's disclaimer
+            paragraph, which had the identical collision on the Home screen. */}
+        <div className="flex items-center justify-between px-8 pt-14">
           <span className="mono flex items-center gap-1.5 rounded-full border border-primary/25 px-3 py-1 text-[11px] tracking-wider text-primary/70">
             VOICE MODE
           </span>
@@ -251,7 +263,7 @@ export function VoiceMode({ coreState, onSend, stopSpeaking, ttsBoundaryRef, onE
               Hands-free {handsFree ? "ON" : "OFF"}
             </button>
 
-            <div className="grid h-16 w-16 place-items-center rounded-full border border-primary/20 bg-primary/[0.04] shadow-[0_0_30px_-6px_rgba(0,229,255,0.4)]">
+            <div className="grid h-16 w-16 place-items-center rounded-full border border-primary/20 bg-primary/[0.04] shadow-[0_0_30px_-6px_color-mix(in_srgb,var(--color-primary)_40%,transparent)]">
               <MicButton supported={supported} listening={listening} disabled={micDisabled} onToggle={handleMicToggle} />
             </div>
           </div>

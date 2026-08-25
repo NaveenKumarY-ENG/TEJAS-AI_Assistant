@@ -8,6 +8,7 @@ import { ScanPulse } from "./ScanPulse";
 import { BackgroundField } from "./BackgroundField";
 import { HUDGlyphs } from "./HUDGlyphs";
 import { HUDStatus } from "./HUDStatus";
+import { CoreEmblem } from "./CoreEmblem";
 import { type CoreState } from "../../store/assistantStore";
 
 const TARGET_INTENSITY: Record<CoreState, number> = {
@@ -65,13 +66,33 @@ function Scene({ coreState, intensityRef }: { coreState: CoreState; intensityRef
  * to be layered on top of this (absolutely positioned, z-0) rather than
  * stacked next to it in the page flow.
  */
-export function AssistantCore({ coreState }: { coreState: CoreState }) {
+export function AssistantCore({
+  coreState,
+  fov = 37,
+  emblemHeightClass,
+}: {
+  coreState: CoreState;
+  /** Vertical FOV — the sphere's rendered size is driven by canvas height
+   *  at a fixed camera distance, independent of width, so this is the one
+   *  knob a caller needs to compensate when its container's height differs
+   *  from the default confined-panel case (e.g. VoiceMode's fullscreen,
+   *  full-viewport-height overlay, which needs a wider FOV — a smaller
+   *  apparent sphere — to leave room for its own controls below it;
+   *  confirmed live that reusing the Home screen's default fov left no
+   *  clearance there). Defaults to the Home screen's tuned value. */
+  fov?: number;
+  /** Passed straight through to CoreEmblem — a caller overriding fov also
+   *  needs to shrink this to match (a wider fov shrinks the sphere at the
+   *  same container height, so the emblem must shrink with it to stay in
+   *  the same proportion). See CoreEmblem's own doc. */
+  emblemHeightClass?: string;
+}) {
   const intensityRef = useRef(0.12);
 
   return (
     <div className="absolute inset-0 z-0">
       <Canvas
-        camera={{ position: [0, 0, 6], fov: 42 }}
+        camera={{ position: [0, 0, 6], fov }}
         dpr={[1, 1.75]}
         gl={{
           antialias: true,
@@ -87,6 +108,7 @@ export function AssistantCore({ coreState }: { coreState: CoreState }) {
           <Scene coreState={coreState} intensityRef={intensityRef} />
         </Suspense>
       </Canvas>
+      <CoreEmblem heightClass={emblemHeightClass} />
       <HUDGlyphs coreState={coreState} />
       <HUDStatus coreState={coreState} />
     </div>

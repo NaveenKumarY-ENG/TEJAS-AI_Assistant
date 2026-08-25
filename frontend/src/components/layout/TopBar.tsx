@@ -24,15 +24,15 @@ export function TopBar({
   const assistantName = useAssistantStore((s) => s.assistantName);
 
   return (
-    <header className="flex items-center justify-between px-8 pt-6 pb-3">
-      <div>
+    <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 px-4 pt-6 pb-3 sm:px-8">
+      <div className="min-w-0">
         <h1 className="text-[22px] font-semibold tracking-tight text-white">
           {greeting}. <span className="text-white/50">I'm {assistantName}.</span>
         </h1>
         <p className="mt-0.5 text-[13px] text-white/45">How can I help you today?</p>
       </div>
 
-      <div className="flex items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-2.5">
         <ModelSelector onError={onModelError} />
         <VoiceSelector onError={onModelError} />
 

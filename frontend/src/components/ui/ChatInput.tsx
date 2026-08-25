@@ -112,7 +112,7 @@ export function ChatInput({
         e.preventDefault();
         submit();
       }}
-      className="relative mx-auto flex w-full max-w-2xl items-end gap-2 rounded-3xl border border-white/10 bg-white/[0.04] p-2 pl-4 shadow-[0_0_30px_-10px_rgba(0,229,255,0.25)] backdrop-blur-2xl transition-shadow focus-within:border-primary/50 focus-within:shadow-[0_0_40px_-8px_rgba(0,229,255,0.4)]"
+      className="relative mx-auto flex w-full max-w-2xl items-end gap-2 rounded-3xl border border-white/10 bg-white/[0.04] p-2 pl-4 shadow-[0_0_30px_-10px_color-mix(in_srgb,var(--color-primary)_25%,transparent)] backdrop-blur-2xl transition-shadow focus-within:border-primary/50 focus-within:shadow-[0_0_40px_-8px_color-mix(in_srgb,var(--color-primary)_40%,transparent)]"
     >
       {listening && (
         <div className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/70 px-3.5 py-1.5 text-[12px] text-primary/80 backdrop-blur-md">
@@ -197,7 +197,7 @@ export function ChatInput({
         type="submit"
         disabled={disabled || !value.trim()}
         aria-label="Send message"
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-accent text-black shadow-[0_0_16px_rgba(0,229,255,0.6)] transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:from-white/10 disabled:to-white/10 disabled:text-white/30 disabled:shadow-none"
+        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-accent text-black shadow-[0_0_16px_color-mix(in_srgb,var(--color-primary)_60%,transparent)] transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:from-white/10 disabled:to-white/10 disabled:text-white/30 disabled:shadow-none"
       >
         <ArrowUp size={16} strokeWidth={2.2} />
       </button>

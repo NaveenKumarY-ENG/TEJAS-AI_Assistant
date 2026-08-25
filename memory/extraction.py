@@ -16,10 +16,51 @@ did before this existed (plain chunked semantic search).
 """
 import json
 import logging
+import re
 
 from config import config
 
 logger = logging.getLogger("assistant.extraction")
+
+# Deterministic sanity checks for a handful of well-known Indian ID-document
+# fields with a strict, checkable shape — a backstop for a failure mode
+# confirmed live: the prompt below already asks the model to omit garbled/
+# illegible values, but that instruction isn't reliably followed (the same
+# instruction-following gap already seen with tool-calling and with table
+# reproduction elsewhere in this codebase — see agent/loop.py's
+# is_structured_table comment). A real Aadhaar card re-upload extracted
+# "Date of Birth": "1947" — a bare year, not a real date — which passed
+# straight through untouched and was shown to the user as fact. Only
+# fields whose name matches one of these known keywords get validated;
+# everything else is left as the prompt's own instructions produced it, so
+# this doesn't try to build a full per-document-type schema — just closes
+# off the handful of formats unambiguous enough to check without risking a
+# false rejection of a legitimately-formatted value.
+_DATE_RE = re.compile(r"^\d{1,2}[\s./-]+(?:\d{1,2}|[A-Za-z]{3,9})[\s./-]+\d{2,4}$")
+_AADHAAR_RE = re.compile(r"^\d{4}\s?\d{4}\s?\d{4}$")
+_PAN_RE = re.compile(r"^[A-Za-z]{5}\d{4}[A-Za-z]$")
+_PIN_RE = re.compile(r"^\d{6}$")
+_MOBILE_RE = re.compile(r"^(?:\+?91[\s-]?)?\d{10}$")
+
+_FIELD_VALIDATORS: list[tuple[str, re.Pattern]] = [
+    ("date of birth", _DATE_RE),
+    ("dob", _DATE_RE),
+    ("aadhaar number", _AADHAAR_RE),
+    ("aadhar number", _AADHAAR_RE),
+    ("pan number", _PAN_RE),
+    ("pin code", _PIN_RE),
+    ("pincode", _PIN_RE),
+    ("mobile", _MOBILE_RE),
+    ("phone", _MOBILE_RE),
+]
+
+
+def _is_valid_field_value(name: str, value: str) -> bool:
+    key = name.strip().lower()
+    for keyword, pattern in _FIELD_VALIDATORS:
+        if keyword in key:
+            return bool(pattern.match(value.strip()))
+    return True  # no validator for this field name — leave as the model produced it
 
 # ID cards/forms are short and front-loaded — the fields that matter are
 # always near the top. Capping input keeps this fast and keeps a long
@@ -63,7 +104,16 @@ def extract_structured_fields(text: str) -> dict:
             options={"temperature": 0},
         )
         data = json.loads(response["message"]["content"])
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+
+        validated = {}
+        for key, value in data.items():
+            if key == "_document_type" or _is_valid_field_value(key, str(value)):
+                validated[key] = value
+            else:
+                logger.warning("Dropping %r=%r - failed field-format validation", key, value)
+        return validated
     except Exception:
         logger.exception("Structured extraction failed — falling back to unstructured")
         return {}

@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -112,15 +113,34 @@ def _open_dashboard_once() -> None:
         chrome_path = _find_chrome()
         if chrome_path:
             try:
-                webbrowser.get(f'"{chrome_path}" %s').open(DASHBOARD_URL)
+                # subprocess.Popen directly, NOT webbrowser.get(...).open() —
+                # confirmed live as a real, severe bug: for a custom command
+                # string like this, webbrowser's GenericBrowser.open() calls
+                # Popen(cmdline).wait() internally (see cpython's
+                # webbrowser.py), blocking this thread until the launched
+                # Chrome PROCESS exits — not until the tab opens. If this is
+                # the first Chrome window (no already-running instance for
+                # it to hand off to), that process persists for the entire
+                # browsing session, so the thread never returns. Harmless on
+                # its own, except this thread is non-daemon (see below), so
+                # it silently prevented this worker process from ever fully
+                # exiting — which `uvicorn --reload` depends on to restart
+                # after a file change, so the whole server became
+                # permanently unresponsive after the very first reload.
+                subprocess.Popen([chrome_path, DASHBOARD_URL])
                 return
-            except webbrowser.Error:
+            except OSError:
                 pass
         webbrowser.open(DASHBOARD_URL)  # fall back to whatever the OS default browser is
 
     # Give uvicorn a moment to actually start accepting connections before
     # the tab loads — the startup event fires just before that, not after.
-    threading.Timer(1.0, _open).start()
+    # daemon=True: even a correctly-written _open() shouldn't be able to
+    # block this process from exiting — see _open()'s comment above for how
+    # badly it went the one time this wasn't a daemon thread.
+    timer = threading.Timer(1.0, _open)
+    timer.daemon = True
+    timer.start()
 
 
 @app.on_event("startup")
@@ -160,6 +180,19 @@ FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 
 if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+    # Brand imagery (sidebar emblem, hologram overlay — see BrandMark.tsx /
+    # CoreEmblem.tsx) lives under frontend/public/brand/, which Vite copies
+    # into dist/brand/ as-is at build time. The dev server (`vite`) serves
+    # everything under public/ automatically, which is why this gap didn't
+    # show up in dev — but this backend only ever mounted /assets and a
+    # one-off /favicon.svg route, so a request for /brand/*.png 404'd here
+    # even though the files genuinely existed in dist/. Confirmed live: the
+    # emblem images silently fell back to their onError placeholder/nothing
+    # in the actual running app, despite rendering correctly under `npm run
+    # dev` during verification — a real gap in the production/backend path
+    # this session's verification hadn't covered.
+    if (FRONTEND_DIST / "brand").exists():
+        app.mount("/brand", StaticFiles(directory=FRONTEND_DIST / "brand"), name="brand")
 
     @app.get("/favicon.svg")
     async def favicon():
@@ -469,8 +502,20 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             raw = await websocket.receive_text()
-            payload = json.loads(raw)
-            user_input = (payload.get("text") or "").strip()
+            try:
+                payload = json.loads(raw)
+                user_input = (payload.get("text") or "").strip()
+            except (json.JSONDecodeError, AttributeError):
+                # Not a {"text": ...} object — a non-JSON frame, or valid
+                # JSON that isn't an object (payload.get would then raise
+                # AttributeError). The shipped frontend never sends either,
+                # but this shouldn't kill the connection over one bad frame:
+                # left unguarded, the exception propagates out of the
+                # handler entirely (it isn't a WebSocketDisconnect, so the
+                # except below doesn't catch it), tearing down the socket
+                # abnormally for the rest of an otherwise-fine session.
+                await websocket.send_json({"type": "error", "message": "Malformed message."})
+                continue
             if not user_input:
                 continue
 

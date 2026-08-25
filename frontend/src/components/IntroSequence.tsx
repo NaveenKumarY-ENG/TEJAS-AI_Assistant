@@ -52,7 +52,7 @@ export function IntroSequence({ children }: { children: ReactNode }) {
       >
         <div
           ref={dotRef}
-          className="h-2.5 w-2.5 rounded-full bg-primary shadow-[0_0_30px_10px_rgba(0,229,255,0.7)]"
+          className="h-2.5 w-2.5 rounded-full bg-primary shadow-[0_0_30px_10px_color-mix(in_srgb,var(--color-primary)_70%,transparent)]"
           style={{ opacity: 0 }}
         />
         <div ref={greetingRef} className="absolute text-center" style={{ opacity: 0 }}>

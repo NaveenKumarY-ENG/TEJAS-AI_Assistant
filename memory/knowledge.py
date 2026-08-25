@@ -261,7 +261,21 @@ def search(query: str, n_results: int = 5) -> list[dict]:
     if _collection.count() == 0:
         return []
     named_filenames = _filenames_mentioned_in(query)
-    results = _collection.query(query_texts=[query], n_results=min(n_results, _collection.count()))
+    query_kwargs = {"query_texts": [query], "n_results": min(n_results, _collection.count())}
+    if named_filenames:
+        # An explicit filename reference scopes the search to just that
+        # document, via a metadata filter rather than embedding distance —
+        # confirmed live as a real bug otherwise: asking about a specific
+        # image with little/no extractable text of its own (a failed OCR
+        # read) still returned a *different*, merely-similar-looking
+        # document's chunks as the nearest embedding matches, and that
+        # document's structured field table (someone else's Aadhaar Card
+        # details) got shown as if it were the requested file's. A metadata
+        # filter guarantees the named document's own chunks are what's
+        # actually retrieved, instead of hoping they happen to rank in the
+        # unscoped top-n_results on embedding distance alone.
+        query_kwargs["where"] = {"filename": {"$in": list(named_filenames)}}
+    results = _collection.query(**query_kwargs)
     docs = results["documents"][0] if results["documents"] else []
     metas = results["metadatas"][0] if results["metadatas"] else []
     dists = results["distances"][0] if results["distances"] else []

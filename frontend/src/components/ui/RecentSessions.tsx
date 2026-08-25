@@ -71,7 +71,7 @@ export function RecentSessions({ onOpenSession, onActiveSessionDeleted }: Recent
                 title={s.title ?? undefined}
                 className={`flex min-w-0 flex-1 items-center justify-between rounded-xl border px-2.5 py-1.5 text-[12.3px] transition-all ${
                   s.id === activeSessionId
-                    ? "border-primary/50 bg-primary/10 text-primary shadow-[0_0_14px_-6px_rgba(0,229,255,0.6)]"
+                    ? "border-primary/50 bg-primary/10 text-primary shadow-[0_0_14px_-6px_color-mix(in_srgb,var(--color-primary)_60%,transparent)]"
                     : "border-white/[0.07] bg-white/[0.015] text-white/55 hover:border-primary/25 hover:bg-white/[0.04] hover:text-white/85"
                 }`}
               >

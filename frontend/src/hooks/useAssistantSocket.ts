@@ -69,6 +69,18 @@ export function useAssistantSocket(ttsAvailable: boolean) {
   // or a deliberate session switch, so an unrelated later network blip
   // doesn't inherit a long delay from an earlier outage.
   const reconnectAttemptRef = useRef(0);
+  // Set right before a deliberate close() with no replacement socket coming
+  // (component unmount) — that socket's onclose still fires asynchronously
+  // afterward (a close is a handshake round-trip, not instant) and needs to
+  // know not to schedule a reconnect nothing will ever use. switchTo's case
+  // (close + immediately open a replacement) is instead handled directly in
+  // onclose by comparing against socketRef.current — see its comment.
+  // Missing this distinction entirely was a real bug, confirmed live:
+  // every "New Chat"/session switch flashed "Reconnecting" about a second
+  // later and silently leaked an orphaned extra socket + backend session,
+  // reproducing deterministically in dev under StrictMode's mount/unmount/
+  // remount too.
+  const intentionalCloseRef = useRef(false);
   // Auto-clears coreState:"error" back to "idle" after ERROR_DISPLAY_MS —
   // tracked so a stale timer can't stomp a legitimate later state if the
   // user starts a new turn while the error is still showing.
@@ -197,12 +209,22 @@ export function useAssistantSocket(ttsAvailable: boolean) {
       const socket = new WebSocket(`${proto}://${location.host}/ws${query}`);
       socketRef.current = socket;
 
+      intentionalCloseRef.current = false;
+
       socket.onopen = () => {
         setConnection("online");
         reconnectAttemptRef.current = 0;
       };
 
       socket.onclose = () => {
+        // Two ways this close is stale, not a real disconnect to react to:
+        // (1) intentionalCloseRef — set right before a deliberate close()
+        // with no replacement socket coming (unmount). (2) socketRef.current
+        // !== socket — a *replacement* socket (switchTo) already took over
+        // socketRef synchronously, before this handshake-driven close event
+        // even had a chance to fire; reacting to it would schedule a
+        // redundant reconnect for a socket nothing is using anymore.
+        if (intentionalCloseRef.current || socketRef.current !== socket) return;
         setConnection("reconnecting");
         setCoreState("idle");
         const attempt = reconnectAttemptRef.current;
@@ -325,6 +347,7 @@ export function useAssistantSocket(ttsAvailable: boolean) {
       if (reconnectTimer.current) window.clearTimeout(reconnectTimer.current);
       clearPendingErrorState();
       stopSpeaking();
+      intentionalCloseRef.current = true;
       socketRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -341,6 +364,7 @@ export function useAssistantSocket(ttsAvailable: boolean) {
       speechBufferRef.current = "";
       spokeAnythingRef.current = false;
       reset();
+      intentionalCloseRef.current = true;
       socketRef.current?.close();
       connect(sessionOverride);
     },

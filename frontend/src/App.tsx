@@ -25,7 +25,7 @@ function AmbientBackdrop() {
         className="absolute inset-0 opacity-[0.05]"
         style={{
           backgroundImage:
-            "linear-gradient(rgba(0,229,255,0.6) 1px, transparent 1px), linear-gradient(90deg, rgba(0,229,255,0.6) 1px, transparent 1px)",
+            "linear-gradient(color-mix(in srgb, var(--color-primary) 60%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 60%, transparent) 1px, transparent 1px)",
           backgroundSize: "56px 56px",
         }}
       />
@@ -138,7 +138,7 @@ function Dashboard() {
               <AssistantCore coreState={coreState} />
 
               <div className="thin-scroll relative z-10 flex h-full min-h-0 flex-col overflow-y-auto">
-                <p className="pt-5 pb-2 text-center text-[11px] text-white/30">
+                <p className="pt-12 pb-2 text-center text-[11px] text-white/30">
                   {assistantName} can make mistakes. Verify important information.
                 </p>
                 <div className="px-5 pb-3">

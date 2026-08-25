@@ -339,6 +339,29 @@ def test_search_filename_mention_does_not_suppress_genuinely_irrelevant_document
         knowledge.delete_document(doc2["id"])
 
 
+def test_search_named_filename_does_not_leak_a_different_documents_content():
+    """Regression test for a real bug found live: asking about one specific
+    document by filename returned a *different* document's structured
+    table instead, because both documents matched the unscoped semantic
+    query and the other one happened to rank as the nearest embedding
+    match. The one clean signal here — an explicit filename reference — must
+    scope the search to that document alone, not just exempt it from the
+    distance threshold while still mixing in whatever else ranks nearby."""
+    fake_fields = {"Name": "Someone Else", "_document_type": "Aadhaar Card"}
+    with patch("memory.knowledge.extraction.extract_structured_fields", return_value=dict(fake_fields)):
+        doc1 = knowledge.ingest_document("clean_card.txt", b"a crisp, clean OCR read of an Aadhaar card")
+    with patch("memory.knowledge.extraction.extract_structured_fields", return_value={}):
+        doc2 = knowledge.ingest_document("garbled_card.txt", b"84 I W 1 L 9 4 1 8 1 Ii 4 1 U 3")
+    try:
+        results = knowledge.search("give me details of garbled_card.txt")
+        filenames = {r["filename"] for r in results}
+        assert filenames == {"garbled_card.txt"}
+        assert "Someone Else" not in "".join(r["text"] for r in results)
+    finally:
+        knowledge.delete_document(doc1["id"])
+        knowledge.delete_document(doc2["id"])
+
+
 def test_ingest_image_raises_ocr_unavailable_when_ocr_missing():
     with patch("memory.knowledge.ocr.available", return_value=False):
         try:

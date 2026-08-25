@@ -68,14 +68,14 @@ export function ProfileCard() {
         onClick={() => setOpen((o) => !o)}
         aria-label="Profile"
         title="Profile"
-        className="relative grid h-9 w-9 shrink-0 place-items-center rounded-full border border-primary/50 bg-primary/5 shadow-[0_0_16px_-2px_rgba(0,229,255,0.55)] transition-shadow hover:shadow-[0_0_20px_-2px_rgba(0,229,255,0.8)]"
+        className="relative grid h-9 w-9 shrink-0 place-items-center rounded-full border border-primary/50 bg-primary/5 shadow-[0_0_16px_-2px_color-mix(in_srgb,var(--color-primary)_55%,transparent)] transition-shadow hover:shadow-[0_0_20px_-2px_color-mix(in_srgb,var(--color-primary)_80%,transparent)]"
       >
         <div className="absolute inset-0 rounded-full bg-primary/15 blur-md" />
         <span className="relative text-[14px] font-bold text-primary">N</span>
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-2 w-64 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0a0e14]/95 p-4 shadow-[0_0_30px_-8px_rgba(0,229,255,0.3)] backdrop-blur-2xl">
+        <div className="absolute left-0 top-full z-50 mt-2 w-64 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0a0e14]/95 p-4 shadow-[0_0_30px_-8px_color-mix(in_srgb,var(--color-primary)_30%,transparent)] backdrop-blur-2xl">
           <div className="mb-3 flex items-center gap-3">
             <div className="relative grid h-11 w-11 shrink-0 place-items-center rounded-full border border-primary/50 bg-primary/5">
               <div className="absolute inset-0 rounded-full bg-primary/15 blur-md" />

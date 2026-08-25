@@ -14,12 +14,13 @@ import { useState } from "react";
 import { useAssistantStore } from "../../store/assistantStore";
 import { QuickActions } from "../ui/QuickActions";
 import { ProfileCard } from "../ui/ProfileCard";
+import { BrandMark } from "./BrandMark";
 
 const NAV_ITEMS = [
   { icon: Home, label: "Home" },
   { icon: SquarePen, label: "Chats", action: "newChat" as const },
   { icon: Mic, label: "Voice", action: "voice" as const },
-  { icon: BookOpen, label: "Knowledge", action: "knowledge" as const },
+  { icon: BookOpen, label: "Knowledge Base", action: "knowledge" as const },
   { icon: FolderKanban, label: "Projects", soon: true },
   { icon: Zap, label: "Automation", soon: true },
   { icon: BarChart3, label: "Analytics", soon: true },
@@ -51,14 +52,12 @@ export function Sidebar({
   return (
     <aside
       className={`relative flex flex-col border-r border-white/[0.06] bg-white/[0.015] backdrop-blur-2xl transition-[width] duration-300 ${
-        collapsed ? "w-[76px]" : "w-[232px]"
+        collapsed ? "w-[76px]" : "w-[264px]"
       }`}
     >
       <div className="flex items-center gap-3 px-4 py-5">
         <ProfileCard />
-        {!collapsed && (
-          <span className="text-sm font-semibold tracking-[0.2em] text-white/90">NKY.AI</span>
-        )}
+        <BrandMark collapsed={collapsed} />
       </div>
 
       <div className="mx-4 border-t border-white/[0.08]" />
@@ -69,9 +68,9 @@ export function Sidebar({
             const isActive =
               item.label === "Home"
                 ? !voiceModeActive && !knowledgePanelActive
-                : item.label === "Voice"
+                : item.action === "voice"
                   ? voiceModeActive
-                  : item.label === "Knowledge"
+                  : item.action === "knowledge"
                     ? knowledgePanelActive
                     : false;
             return (
@@ -86,7 +85,7 @@ export function Sidebar({
               }}
               className={`group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-[13px] transition-all ${
                 isActive
-                  ? "border-primary/50 bg-primary/10 text-white shadow-[0_0_18px_-6px_rgba(0,229,255,0.6)]"
+                  ? "border-transparent bg-gradient-to-r from-primary/90 to-secondary/70 text-white shadow-[0_0_20px_-4px_color-mix(in_srgb,var(--color-primary)_55%,transparent)]"
                   : "border-white/[0.07] bg-white/[0.015] text-white/60 hover:border-primary/30 hover:bg-white/[0.04] hover:text-white/90"
               }`}
             >

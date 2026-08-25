@@ -39,19 +39,48 @@ def _get_reader():
                     "Loading EasyOCR reader on %s (first use only, may download weights)...",
                     "cuda" if gpu else "cpu",
                 )
-                _reader = easyocr.Reader(["en"], gpu=gpu)
+                # English + Hindi: many real-world documents worth OCR-ing
+                # here (Aadhaar cards especially) are bilingual, with English
+                # field values sitting right next to Devanagari labels. An
+                # English-only reader doesn't skip that Hindi text — it
+                # still tries to force those glyphs into English character
+                # predictions, and that garbage bleeds into the adjacent
+                # real text too (confirmed live: an Aadhaar number came back
+                # as "AASHN XMLATAATnR64", an address as "SH4OHABAD ROLD").
+                # Recognizing Hindi as Hindi fixes this at the source rather
+                # than trying to clean up its fallout afterward.
+                _reader = easyocr.Reader(["en", "hi"], gpu=gpu)
     return _reader
 
 
+# Confidence threshold below which an OCR detection is treated as noise
+# (a misread watermark, QR-code artifact, or background pattern) rather than
+# real text. Calibrated against garbled reads seen live — a real, if
+# imperfect, text detection still typically clears this; the kind of
+# fabricated-looking gibberish that comes from a low-confidence guess does
+# not. Same reasoning as memory/knowledge.py's _MAX_RELEVANT_DISTANCE: a
+# fixed empirical cutoff beats trusting every result as equally reliable.
+_MIN_CONFIDENCE = 0.4
+
+
 def image_to_text(data: bytes) -> str:
-    """OCR raw image bytes (png/jpg/...) and return the recognized text."""
+    """OCR raw image bytes (png/jpg/...) and return the recognized text,
+    with low-confidence detections dropped and the remainder reassembled in
+    reading order (top-to-bottom, left-to-right)."""
     import numpy as np
     from PIL import Image
 
     reader = _get_reader()
     image = np.array(Image.open(io.BytesIO(data)).convert("RGB"))
     with _reader_lock:
-        lines = reader.readtext(image, detail=0, paragraph=True)
+        # detail=1 (not the previous detail=0) to get a confidence score per
+        # detection; paragraph=False so confidence survives per-line rather
+        # than being discarded by paragraph grouping — the reading-order
+        # sort below replaces what paragraph=True used to provide.
+        detections = reader.readtext(image, detail=1, paragraph=False)
+    row_height = max(image.shape[0] / 80, 1)
+    detections.sort(key=lambda det: (round(det[0][0][1] / row_height), det[0][0][0]))
+    lines = [text for _, text, confidence in detections if confidence >= _MIN_CONFIDENCE]
     return "\n".join(lines)
 
 
