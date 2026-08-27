@@ -47,7 +47,7 @@ const markdownComponents = {
     ),
 };
 
-export function ConversationPanel() {
+export function ConversationPanel({ compactEmptyHint = false }: { compactEmptyHint?: boolean }) {
   const timeline = useAssistantStore((s) => s.timeline);
   const assistantName = useAssistantStore((s) => s.assistantName);
   const coreState = useAssistantStore((s) => s.coreState);
@@ -65,8 +65,17 @@ export function ConversationPanel() {
   return (
     <div ref={scrollRef} className="thin-scroll flex min-h-[180px] flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
       {timeline.length === 0 && (
-        <p className="mx-auto mt-8 max-w-md rounded-2xl bg-black/30 px-5 py-3 text-center text-[14px] text-white/50 backdrop-blur-md">
-          Ask me anything — I can search, calculate, check the weather, and remember what matters.
+        // Pushed to the bottom of this flex-1 area (mt-auto) rather than
+        // sitting near the top — the hologram is vertically centered in the
+        // section behind this panel, so a top-anchored hint used to land
+        // right over its center. Confirmed live: bottom placement clears it.
+        // Voice Mode's box is much shorter than the Home screen's, with a
+        // footer (hands-free/mic) right below this area — the full sentence
+        // was tall enough to crowd right up against it. Confirmed live.
+        <p className="mx-auto mt-auto mb-2 max-w-md rounded-2xl bg-black/30 px-5 py-3 text-center text-[14px] text-white/50 backdrop-blur-md">
+          {compactEmptyHint
+            ? "Ask Anything"
+            : "Ask me anything — I can search, calculate, check the weather, and remember what matters."}
         </p>
       )}
 

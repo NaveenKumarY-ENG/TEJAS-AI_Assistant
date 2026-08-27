@@ -194,10 +194,6 @@ if FRONTEND_DIST.exists():
     if (FRONTEND_DIST / "brand").exists():
         app.mount("/brand", StaticFiles(directory=FRONTEND_DIST / "brand"), name="brand")
 
-    @app.get("/favicon.svg")
-    async def favicon():
-        return FileResponse(FRONTEND_DIST / "favicon.svg")
-
     @app.get("/")
     async def index():
         return FileResponse(FRONTEND_DIST / "index.html")

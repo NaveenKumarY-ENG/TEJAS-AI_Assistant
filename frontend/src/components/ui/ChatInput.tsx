@@ -14,6 +14,13 @@ interface ChatInputProps {
   onSend: (text: string, opts?: { speak?: boolean }) => void;
   onSoonClick: (label: string) => void;
   onVoiceError: (message: string) => void;
+  /** Lets AssistantCore's hologram react live to real mic volume — see its
+   *  own micAnalyserRef doc. Filled in once, on mount, with a getter closing
+   *  over this hook's own analyserRef (whose .current AnalyserNode is
+   *  created/destroyed per recording session, this wrapper ref's identity
+   *  never changes). Optional — omitted entirely on any screen with no
+   *  hologram to drive (there is none today, but this shouldn't be required). */
+  exposeMicAnalyserRef?: React.MutableRefObject<(() => AnalyserNode | null) | null>;
 }
 
 export function ChatInput({
@@ -24,6 +31,7 @@ export function ChatInput({
   onSend,
   onSoonClick,
   onVoiceError,
+  exposeMicAnalyserRef,
 }: ChatInputProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -86,6 +94,13 @@ export function ChatInput({
     submitVoiceText,
     onVoiceError
   );
+
+  useEffect(() => {
+    if (exposeMicAnalyserRef) exposeMicAnalyserRef.current = () => analyserRef.current;
+    // analyserRef itself is a stable ref identity for this hook's lifetime —
+    // only needs wiring up once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exposeMicAnalyserRef]);
 
   const submit = () => submitText(value);
 

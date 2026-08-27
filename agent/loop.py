@@ -75,7 +75,15 @@ def _is_volatile_query(text: str) -> bool:
 # fix, same reasoning. "vase" covers a real observed typo/mishearing of
 # "base"; matching broadly is safe here since a false positive only means
 # "skip remembering."
-_KNOWLEDGE_LISTING_RE = re.compile(r"knowledge\s*(base|vase)", re.IGNORECASE)
+#
+# "know\w*" (not the literal word "knowledge") confirmed live as a real,
+# actually-triggered bug: a genuine typo ("what does knowleddge base has")
+# didn't match the old knowledge-literal pattern, so that answer (itself
+# naming a document that no longer exists) got memorized anyway and kept
+# being recalled as fact for every later "what's in my knowledge base"
+# question. "know" plus any word characters covers knowledge/knowldge/
+# knowlege/knowleddge and similar without needing to enumerate every typo.
+_KNOWLEDGE_LISTING_RE = re.compile(r"know\w*\s*(base|vase)", re.IGNORECASE)
 
 
 def _is_knowledge_listing_query(text: str) -> bool:

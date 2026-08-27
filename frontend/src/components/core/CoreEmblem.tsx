@@ -17,7 +17,7 @@ import { useState } from "react";
  *  hardcoded constant, because AssistantCore's fov also varies per caller
  *  (see its own doc) — a wider fov shrinks the sphere's apparent size at
  *  the same container height, so the emblem needs to shrink to match. */
-export function CoreEmblem({ heightClass = "h-[18%]" }: { heightClass?: string }) {
+export function CoreEmblem({ heightClass = "h-[23%]" }: { heightClass?: string }) {
   const [imgFailed, setImgFailed] = useState(false);
   if (imgFailed) return null;
 

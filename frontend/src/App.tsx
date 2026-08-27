@@ -16,6 +16,7 @@ import { useAssistantStore } from "./store/assistantStore";
 import { useAssistantSocket } from "./hooks/useAssistantSocket";
 import { useToast } from "./hooks/useToast";
 import { spokenGreeting } from "./utils/greeting";
+import { HOLOGRAM_BACKDROP_STYLE } from "./utils/hologramBackdrop";
 import { GREETING_DELAY_MS } from "./constants/voice";
 
 function AmbientBackdrop() {
@@ -57,6 +58,10 @@ function Dashboard() {
     useAssistantSocket(ttsAvailable);
   const [voiceModeActive, setVoiceModeActive] = useState(false);
   const [knowledgePanelActive, setKnowledgePanelActive] = useState(false);
+  // Lets the hologram (AssistantCore) react live to real mic volume without
+  // lifting the whole voice-recording pipeline out of ChatInput — see
+  // ChatInput's exposeMicAnalyserRef and AssistantCore's micAnalyserRef docs.
+  const micAnalyserRef = useRef<(() => AnalyserNode | null) | null>(null);
 
   const handleToggleVoiceOutput = () => {
     if (voiceOutputEnabled) stopSpeaking(); // muting mid-reply should cut audio immediately
@@ -133,9 +138,12 @@ function Dashboard() {
           />
 
           <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-5 px-6 pb-6 lg:grid-cols-[1fr_300px]">
-            <section className="relative min-h-0 overflow-hidden rounded-2xl border border-white/[0.06]">
+            <section
+              className="relative min-h-0 overflow-hidden rounded-2xl border border-white/[0.06] bg-[#050208]"
+              style={HOLOGRAM_BACKDROP_STYLE}
+            >
               {/* Full-bleed hologram backdrop — the chat UI below floats on top of it. */}
-              <AssistantCore coreState={coreState} />
+              <AssistantCore coreState={coreState} micAnalyserRef={micAnalyserRef} />
 
               <div className="thin-scroll relative z-10 flex h-full min-h-0 flex-col overflow-y-auto">
                 <p className="pt-12 pb-2 text-center text-[11px] text-white/30">
@@ -150,6 +158,7 @@ function Dashboard() {
                     onSend={sendMessage}
                     onSoonClick={onSoon}
                     onVoiceError={onVoiceError}
+                    exposeMicAnalyserRef={micAnalyserRef}
                   />
                 </div>
                 <ConversationPanel />

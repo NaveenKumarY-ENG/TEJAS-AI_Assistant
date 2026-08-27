@@ -6,14 +6,24 @@ import { energyFragmentShader, energyVertexShader } from "../../shaders/energySp
 interface EnergySphereProps {
   radius?: number;
   intensityRef: React.MutableRefObject<number>;
+  voiceLevelRef?: React.MutableRefObject<number>;
   colorA?: string;
   colorB?: string;
 }
 
 /** Layer 1: the glowing, breathing energy sphere at the heart of the core,
  *  plus a crisp low-poly wireframe cage layered around it for a hologram
- *  "schematic" read rather than a solid glowing blob. */
-export function EnergySphere({ radius = 1, intensityRef, colorA = "#00e5ff", colorB = "#6c63ff" }: EnergySphereProps) {
+ *  "schematic" read rather than a solid glowing blob. voiceLevelRef (live
+ *  mic RMS while actually listening, see AssistantCore) adds a real-time
+ *  boost on top of the coreState-driven intensity, so the sphere itself —
+ *  not just the orbital rings — visibly breathes with the user's voice. */
+export function EnergySphere({
+  radius = 1,
+  intensityRef,
+  voiceLevelRef,
+  colorA = "#00e5ff",
+  colorB = "#6c63ff",
+}: EnergySphereProps) {
   const materialRef = useRef<THREE.ShaderMaterial>(null);
   const groupRef = useRef<THREE.Group>(null);
   const cageRef = useRef<THREE.LineSegments>(null);
@@ -33,14 +43,15 @@ export function EnergySphere({ radius = 1, intensityRef, colorA = "#00e5ff", col
   const cageEdges = useMemo(() => new THREE.EdgesGeometry(cageGeometry), [cageGeometry]);
 
   useFrame((state, delta) => {
-    const intensity = intensityRef.current;
+    const voice = voiceLevelRef?.current ?? 0;
+    const intensity = Math.min(intensityRef.current + voice * 0.5, 1);
     if (materialRef.current) {
       materialRef.current.uniforms.uTime.value = state.clock.elapsedTime;
       materialRef.current.uniforms.uIntensity.value = intensity;
     }
     if (groupRef.current) {
       groupRef.current.rotation.y += delta * (0.06 + intensity * 0.12);
-      const breathe = 1 + Math.sin(state.clock.elapsedTime * 0.9) * (0.02 + intensity * 0.03);
+      const breathe = 1 + Math.sin(state.clock.elapsedTime * 0.9) * (0.02 + intensity * 0.03) + voice * 0.05;
       groupRef.current.scale.setScalar(breathe);
     }
     if (cageRef.current) {

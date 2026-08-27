@@ -9,6 +9,7 @@ import { VoiceWaveform, type WaveformMode } from "./VoiceWaveform";
 import { useSpeechRecognition } from "../../hooks/useSpeechRecognition";
 import { useAssistantStore, type CoreState } from "../../store/assistantStore";
 import { getVoiceModelId, setVoiceModelId } from "../../utils/voicePreference";
+import { HOLOGRAM_BACKDROP_STYLE } from "../../utils/hologramBackdrop";
 import type { TtsBoundarySignal } from "../../hooks/useSpeechSynthesis";
 
 interface VoiceModeProps {
@@ -193,14 +194,13 @@ export function VoiceMode({ coreState, onSend, stopSpeaking, ttsBoundaryRef, onE
   const micDisabled = (replyBusy && coreState !== "speaking") || processing;
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#050505]">
-      {/* Wider FOV than the Home screen's default (37°) — this view's canvas
-          is the full viewport height (fullscreen overlay, not a confined
-          panel), which otherwise renders the sphere large enough to crowd
-          the hands-free/mic controls anchored below it. emblemHeightClass
-          is scaled down to match (proportionally smaller sphere needs a
-          proportionally smaller emblem) — see AssistantCore's prop docs. */}
-      <AssistantCore coreState={coreState} fov={54} emblemHeightClass="h-[9%]" />
+    <div className="fixed inset-0 z-50 bg-[#050208]" style={HOLOGRAM_BACKDROP_STYLE}>
+      {/* Tighter FOV than before (54° -> 46°) so the sphere reads as a big,
+          wide hologram befitting a fullscreen view rather than shrinking to
+          leave headroom — confirmed live the old value looked small in this
+          much bigger canvas. emblemHeightClass scaled up to match (see
+          AssistantCore's prop docs) plus a bit more on top per its own ask. */}
+      <AssistantCore coreState={coreState} fov={46} emblemHeightClass="h-[15%]" />
 
       <div className="relative z-10 flex h-full flex-col">
         {/* pt-14, not pt-6: AssistantCore's own HUDStatus ("CORE ONLINE" etc.)
@@ -229,13 +229,28 @@ export function VoiceMode({ coreState, onSend, stopSpeaking, ttsBoundaryRef, onE
 
         <div className="flex-1" />
 
-        <div className="flex flex-col items-center gap-4 pb-6">
+        {/* Hands-free/mic used to float here, right below the sphere — at
+            the bigger hologram size this now asks for, that row sat right
+            on top of the lower half of the sphere and its emblem. Confirmed
+            live. Moved into the chat box's own footer below instead, so
+            nothing overlaps the hologram at all. */}
+        <div className="flex flex-col items-center gap-3 pb-4">
+          {/* revealText already got a dark blurred pill so it stayed legible
+              over the hologram — these other status lines didn't, and sat
+              directly on the bright sphere with nothing behind them.
+              Confirmed live: "Click the mic to talk" and voiceError text
+              were genuinely hard to read against it. Same treatment now,
+              for all of them. */}
           {!supported && (
-            <p className="max-w-sm text-center text-[13px] text-white/50">
+            <p className="max-w-sm rounded-full bg-black/60 px-3.5 py-1.5 text-center text-[13px] text-white/60 backdrop-blur-md">
               Voice input isn't available in this context — this page needs to be served over localhost or https.
             </p>
           )}
-          {voiceError && <p className="max-w-sm text-center text-[12.5px] text-warning">{voiceError}</p>}
+          {voiceError && (
+            <p className="max-w-sm rounded-full bg-black/60 px-3.5 py-1.5 text-center text-[12.5px] text-warning backdrop-blur-md">
+              {voiceError}
+            </p>
+          )}
 
           <VoiceWaveform mode={waveformMode} analyserRef={analyserRef} boundaryRef={ttsBoundaryRef} className="scale-150" />
 
@@ -245,36 +260,55 @@ export function VoiceMode({ coreState, onSend, stopSpeaking, ttsBoundaryRef, onE
             </div>
           )}
           {!revealText && !listening && !processing && (
-            <p className="text-[12px] text-white/40">
+            <p className="rounded-full bg-black/60 px-3.5 py-1.5 text-[12px] text-white/50 backdrop-blur-md">
               {handsFree ? "Listening resumes automatically after each reply" : "Click the mic to talk"}
             </p>
           )}
-
-          <div className="flex items-center gap-5">
-            <button
-              type="button"
-              onClick={() => setHandsFree((h) => !h)}
-              className={`rounded-full border px-3 py-1.5 text-[11.5px] transition-colors ${
-                handsFree
-                  ? "border-primary/40 bg-primary/10 text-primary"
-                  : "border-white/[0.08] bg-white/[0.03] text-white/50 hover:text-white/80"
-              }`}
-            >
-              Hands-free {handsFree ? "ON" : "OFF"}
-            </button>
-
-            <div className="grid h-16 w-16 place-items-center rounded-full border border-primary/20 bg-primary/[0.04] shadow-[0_0_30px_-6px_color-mix(in_srgb,var(--color-primary)_40%,transparent)]">
-              <MicButton supported={supported} listening={listening} disabled={micDisabled} onToggle={handleMicToggle} />
-            </div>
-          </div>
         </div>
 
         {/* flex + flex-col is what makes ConversationPanel's own flex-1/
             overflow-y-auto actually take effect — without a flex parent to
             size it against, it just grows with content and gets silently
             clipped by this box's max-h instead of scrolling. */}
-        <div className="mx-auto mb-6 flex max-h-[26vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-white/[0.06] bg-black/30 backdrop-blur-md">
-          <ConversationPanel />
+        {/* A near-invisible white/[0.06] border used to be the only edge
+            here, so the whole panel read as a flat dark void — confirmed
+            live. A gold edge (matching the hologram's own palette) plus a
+            faint outer glow makes it a clearly readable, deliberate panel. */}
+        <div className="mx-auto mb-6 flex max-h-[32vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-[#ffae42]/30 bg-black/40 shadow-[0_0_28px_-10px_rgba(255,174,66,0.45)] backdrop-blur-md">
+          {/* min-h-0 overrides a flex child's default min-height:auto (its
+              own content size) — without it, on a short enough window this
+              wrapper (and ConversationPanel inside it) refused to shrink
+              below their natural content height, so the footer row below
+              got pushed past the box's max-h and silently clipped away by
+              overflow-hidden — confirmed live as a real bug, not just a
+              display glitch. With min-h-0, THIS shrinks first and
+              ConversationPanel's own overflow-y-auto scrolls internally
+              instead, guaranteeing the footer stays visible always. */}
+          <div className="min-h-0 flex-1">
+            <ConversationPanel compactEmptyHint />
+          </div>
+
+          {/* Hands-free + mic now live here, bottom-right of the chat box,
+              instead of floating over the hologram — see the comment above
+              this box's other JSX site for why that moved. shrink-0 so this
+              row is never the one flexbox squeezes when space is tight. */}
+          <div className="flex shrink-0 items-center justify-end gap-3 border-t border-white/[0.08] bg-black/20 px-4 py-3">
+            <button
+              type="button"
+              onClick={() => setHandsFree((h) => !h)}
+              className={`rounded-full border px-3 py-1.5 text-[11.5px] transition-colors ${
+                handsFree
+                  ? "border-primary/50 bg-primary/15 text-primary"
+                  : "border-white/[0.12] bg-white/[0.05] text-white/60 hover:text-white/90"
+              }`}
+            >
+              Hands-free {handsFree ? "ON" : "OFF"}
+            </button>
+
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-primary/30 bg-black/60 shadow-[0_0_20px_-6px_color-mix(in_srgb,var(--color-primary)_55%,transparent)]">
+              <MicButton supported={supported} listening={listening} disabled={micDisabled} onToggle={handleMicToggle} />
+            </div>
+          </div>
         </div>
       </div>
     </div>

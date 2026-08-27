@@ -31,6 +31,11 @@ def test_is_knowledge_listing_query_detects_real_reported_phrasings():
     assert _is_knowledge_listing_query("Can you reach out the knowledge base and tell me what you have currently?")
     assert _is_knowledge_listing_query("what is available in the knowledge vase")  # observed typo/mishearing
     assert _is_knowledge_listing_query("what is available in knowledge base")
+    # Confirmed live as a real, actually-triggered bug: this exact typo'd
+    # phrasing didn't match the old knowledge-literal pattern, so the answer
+    # (naming a document that no longer existed) got memorized anyway and
+    # kept being recalled as fact for every later listing question.
+    assert _is_knowledge_listing_query("what does knowleddge base has")
 
 
 def test_is_knowledge_listing_query_ignores_unrelated_questions():
