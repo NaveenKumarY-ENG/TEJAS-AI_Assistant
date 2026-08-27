@@ -127,7 +127,12 @@ export function ChatInput({
         e.preventDefault();
         submit();
       }}
-      className="relative mx-auto flex w-full max-w-2xl items-end gap-2 rounded-3xl border border-white/10 bg-white/[0.04] p-2 pl-4 shadow-[0_0_30px_-10px_color-mix(in_srgb,var(--color-primary)_25%,transparent)] backdrop-blur-2xl transition-shadow focus-within:border-primary/50 focus-within:shadow-[0_0_40px_-8px_color-mix(in_srgb,var(--color-primary)_40%,transparent)]"
+      // Text box on its own row, toolbar (keyboard/attach/camera/settings on
+      // the left, waveform/mic/send on the right) on a second row below —
+      // previously everything lived in one items-end row, so a growing
+      // multi-line textarea pushed the icon row down with it and the whole
+      // thing read as congested. Confirmed live.
+      className="relative mx-auto flex w-full max-w-2xl flex-col gap-1.5 rounded-3xl border border-white/10 bg-white/[0.04] p-3 shadow-[0_0_30px_-10px_color-mix(in_srgb,var(--color-primary)_25%,transparent)] backdrop-blur-2xl transition-shadow focus-within:border-primary/50 focus-within:shadow-[0_0_40px_-8px_color-mix(in_srgb,var(--color-primary)_40%,transparent)]"
     >
       {listening && (
         <div className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/70 px-3.5 py-1.5 text-[12px] text-primary/80 backdrop-blur-md">
@@ -145,22 +150,13 @@ export function ChatInput({
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => onSoonClick("Keyboard mode")}
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-white/45 transition-colors hover:text-white"
-        aria-label="Keyboard mode"
-      >
-        <Keyboard size={16} strokeWidth={1.8} />
-      </button>
-
       <textarea
         ref={textareaRef}
         rows={1}
         value={value}
         disabled={disabled}
         placeholder={listening || processing ? "" : "Ask me anything..."}
-        className="max-h-40 flex-1 resize-none bg-transparent py-2 text-[15px] text-white placeholder:text-white/35 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        className="max-h-40 w-full resize-none bg-transparent px-1 py-1 text-[15px] text-white placeholder:text-white/35 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         onChange={(e) => {
           setValue(e.target.value);
           e.target.style.height = "auto";
@@ -174,48 +170,62 @@ export function ChatInput({
         }}
       />
 
-      <button
-        type="button"
-        onClick={() => onSoonClick("File upload")}
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-white/45 transition-colors hover:text-white"
-        aria-label="Upload file"
-      >
-        <Paperclip size={16} strokeWidth={1.8} />
-      </button>
-      <button
-        type="button"
-        onClick={() => onSoonClick("Camera")}
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-white/45 transition-colors hover:text-white"
-        aria-label="Camera"
-      >
-        <Camera size={16} strokeWidth={1.8} />
-      </button>
-      <button
-        type="button"
-        onClick={() => onSoonClick("Input settings")}
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-white/45 transition-colors hover:text-white"
-        aria-label="Settings"
-      >
-        <SlidersHorizontal size={16} strokeWidth={1.8} />
-      </button>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => onSoonClick("Keyboard mode")}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-white/45 transition-colors hover:text-white"
+            aria-label="Keyboard mode"
+          >
+            <Keyboard size={16} strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
+            onClick={() => onSoonClick("File upload")}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-white/45 transition-colors hover:text-white"
+            aria-label="Upload file"
+          >
+            <Paperclip size={16} strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
+            onClick={() => onSoonClick("Camera")}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-white/45 transition-colors hover:text-white"
+            aria-label="Camera"
+          >
+            <Camera size={16} strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
+            onClick={() => onSoonClick("Input settings")}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-white/45 transition-colors hover:text-white"
+            aria-label="Settings"
+          >
+            <SlidersHorizontal size={16} strokeWidth={1.8} />
+          </button>
+        </div>
 
-      <VoiceWaveform mode={waveformMode} analyserRef={analyserRef} boundaryRef={ttsBoundaryRef} className="hidden sm:block" />
+        <div className="flex items-center gap-2">
+          <VoiceWaveform mode={waveformMode} analyserRef={analyserRef} boundaryRef={ttsBoundaryRef} className="hidden sm:block" />
 
-      <MicButton
-        supported={supported}
-        listening={listening}
-        disabled={(disabled && coreState !== "speaking") || processing}
-        onToggle={handleMicToggle}
-      />
+          <MicButton
+            supported={supported}
+            listening={listening}
+            disabled={(disabled && coreState !== "speaking") || processing}
+            onToggle={handleMicToggle}
+          />
 
-      <button
-        type="submit"
-        disabled={disabled || !value.trim()}
-        aria-label="Send message"
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-accent text-black shadow-[0_0_16px_color-mix(in_srgb,var(--color-primary)_60%,transparent)] transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:from-white/10 disabled:to-white/10 disabled:text-white/30 disabled:shadow-none"
-      >
-        <ArrowUp size={16} strokeWidth={2.2} />
-      </button>
+          <button
+            type="submit"
+            disabled={disabled || !value.trim()}
+            aria-label="Send message"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary to-accent text-black shadow-[0_0_16px_color-mix(in_srgb,var(--color-primary)_60%,transparent)] transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:from-white/10 disabled:to-white/10 disabled:text-white/30 disabled:shadow-none"
+          >
+            <ArrowUp size={16} strokeWidth={2.2} />
+          </button>
+        </div>
+      </div>
     </form>
   );
 }
