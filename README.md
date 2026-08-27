@@ -22,6 +22,8 @@ It talks back and forth by text or voice, remembers context across sessions, and
 Asking about one specific document by filename (e.g. "give me the details of report.pdf") scopes the search to that document alone via a ChromaDB metadata filter, rather than just exempting it from the relevance-distance threshold — confirmed live as a real bug otherwise: a document with little OCR-extractable text of its own could still return a *different*, merely-similar-looking document's data as the nearest embedding match, showing someone else's ID card fields as if they belonged to the file actually asked about.
 
 Knowledge base search runs automatically on every turn (`agent/loop.py`), the same way conversation memory recall does — never dependent on the model deciding to call `search_knowledge` itself, which repeated live testing showed a small local model would unreliably skip for exactly the questions that matter most (a bare filename reference). A document's exact extracted field table is appended to the reply verbatim by the code, not retyped by the model — also confirmed live that a 7B model would "helpfully" alter an illegible OCR value into a cleaner-looking guess even when explicitly told to present it as-is, which is worse than showing the honest, imperfect original. "What's in my knowledge base" is answered directly too, from a lightweight ambient document listing, without needing a tool call. And a knowledge-grounded answer is never written to long-term memory (same principle as the point-in-time-fact exclusion above) — the documents it's grounded in can change (re-extraction, a retag, a deletion), and a memorized old answer has no way to know that happened. This covers "what's in my knowledge base" too, not just content questions — confirmed live as a real, separate gap: that question is answered from the ambient document listing rather than a `search_knowledge` match, so it fell through the content-only version of this guard, and a stale listing answer (naming documents since deleted) kept resurfacing until the guard was widened to catch it (`agent/loop.py`'s `_is_knowledge_listing_query`).
+- **Real Calendar reminders** — "remind me to X on [date]" creates an actual Google Calendar event with a popup *and* email notification (`integrations/google_calendar.py`), not just an in-app list. Deliberately does not use its own scheduler/SMTP sender to fire these — Google's own infrastructure delivers both notification types, so a reminder still fires correctly even if this app's server isn't running at the time it's due. Falls back to an in-app-only reminder (today's original behavior) whenever Calendar isn't set up or a request fails — never blocks saving the reminder itself. One-time setup required — see [Setup](#setup). Reminders can also **recur** ("remind me every Monday to...") — the exact recurrence rule is always built by code from a simple `daily`/`weekly`/`monthly` choice, never hand-written by the model itself (weekly derives which day from the reminder's own date, so the model never has to name a weekday in any special syntax). **Reschedule or cancel** a reminder in plain conversation too ("push my QA report reminder to Friday," "delete the football reminder") — both keep the in-app copy and its Calendar event in sync. Every confirmation shows a readable date/time ("Wednesday, September 05, 2026 at 10:00 AM"), not raw ISO text, so a misheard date is obvious immediately rather than silently wrong.
+- **Amazon shopping** — Tier 1: "show me some phones on Amazon" opens a real, visible browser window (a dedicated Playwright-driven Chromium profile — never your everyday Chrome, no login needed for search) navigated to a live Amazon search, and returns real results (title/price/rating/link) in chat (`tools/shopping_tool.py`). Tier 2: "order the [item]" (`tools/order_tool.py`) adds a specific item — from a prior search result already in the conversation — to your cart and walks all the way to Amazon's real checkout **review** page, then stops. It never clicks "Place your order" — that capability doesn't exist in the code, not just something the model is told not to do — so a real purchase always needs your own click, in your own visible browser window. Requires being logged into Amazon in that dedicated browser window once (session persists after that); if you're not, it says so plainly rather than trying to sign in on your behalf. See [Security notes](#security-notes) for why full autonomous purchasing is a deliberate non-goal.
 - **Switchable LLM backends** — local Ollama (Qwen 2.5, Llama 3.1, Gemma 2, ...), Anthropic Claude, or Google Gemini (hosted, stronger tool-calling; Gemini has a free tier with no billing/card required), swappable live from a dropdown in the top bar, no restart needed.
 - **Dual STT backends** — local faster-whisper (free, offline) or OpenAI's Whisper API, with automatic fallback to local if the cloud call fails.
 - **Quick actions** — one-click canned prompts (weather, web search, system check, reminders, memory, timezone lookups, quick calculations) in the sidebar for instant access without typing.
@@ -65,8 +67,10 @@ tejas-assistant/
 │   ├── system_info.py        # Read-only host OS/CPU/disk info
 │   ├── file_ops.py           # Sandboxed read/write/list files
 │   ├── code_exec.py          # Sandboxed Python execution
-│   ├── memory_tool.py        # Reminders + user-fact memory
-│   └── knowledge_tool.py     # Search uploaded knowledge-base documents
+│   ├── memory_tool.py        # Reminders (+ real Calendar events) + user-fact memory
+│   ├── knowledge_tool.py     # Search uploaded knowledge-base documents
+│   ├── shopping_tool.py      # Amazon product search via a real browser (Tier 1 — no purchasing)
+│   └── order_tool.py         # Amazon cart + checkout review via a real browser (Tier 2 — stops before payment)
 ├── memory/
 │   ├── structured.py         # SQLite: sessions, messages, reminders, facts, documents, watched folders
 │   ├── vector.py             # ChromaDB: semantic recall of past conversations
@@ -74,6 +78,9 @@ tejas-assistant/
 │   ├── ocr.py                 # EasyOCR: image/scanned-PDF text extraction for the knowledge base
 │   ├── folder_watch.py       # watchdog: keeps a watched folder's documents in sync live
 │   └── extraction.py         # Local-only LLM call: structured field extraction (ID cards, invoices, ...)
+├── integrations/             # Third-party service wrappers (not this app's own data/tool interface)
+│   ├── google_calendar.py    # Real Calendar events for reminders (popup + email, Google-delivered)
+│   └── browser.py            # Persistent Playwright/Chromium context for the Amazon shopping tool
 ├── frontend/                 # React/Three.js dashboard (Vite)
 │   └── src/
 │       ├── components/       # core/ (hologram), ui/ (chat, widgets), layout/, voice/, knowledge/
@@ -125,6 +132,19 @@ copy .env.example .env          # Windows: copy, macOS/Linux: cp
 Edit `.env` as needed (see [Configuration](#configuration) below) — the defaults work out of the box with just Ollama running locally.
 
 Neural TTS also uses `espeak-ng` as an optional fallback for out-of-dictionary/foreign words (not needed for normal English text) — install it separately if you notice mispronounced uncommon words: [espeak-ng releases](https://github.com/espeak-ng/espeak-ng/releases).
+
+**Optional — real Calendar reminders.** Without this, `manage_reminders` still works exactly as before (in-app only). To enable it:
+1. Go to [Google Cloud Console](https://console.cloud.google.com/), create a project (any name).
+2. In "APIs & Services" → "Library", enable the **Google Calendar API**.
+3. In "APIs & Services" → "OAuth consent screen", configure it (External is fine; Testing mode is fine for personal use — add your own Google account under "Test users").
+4. In "APIs & Services" → "Credentials", create an **OAuth client ID** of type **Desktop app**, and download the JSON.
+5. Save that file as `data/google_credentials.json`.
+6. Run `python -m integrations.google_calendar` once — it opens a browser for a single consent click, then writes `data/google_token.json` (a refresh token; it renews itself silently after this, no further prompts). Both files stay local, are gitignored via `data/`, and are never sent anywhere except Google's own API.
+
+**Optional — the Amazon shopping tool.** Without this, `shop_amazon` reports itself unavailable with a setup message. `pip install -r requirements.txt` installs the `playwright` package, but not a browser — that's a separate one-time download:
+```bash
+playwright install chromium
+```
 
 **2. Frontend**
 
@@ -191,7 +211,7 @@ All settings live in `.env` (copy from `.env.example`). Key ones:
 
 ## Available tools
 
-The model decides when to call these — it doesn't guess at things it can look up. Kept to 9 tools (not more) deliberately: on CPU-only local inference, every tool in the schema adds real, measured latency to *every* request (see [Performance notes](#performance-notes) below), so related actions are grouped into one tool with an operation/action parameter rather than split into many single-purpose ones. `search_knowledge` is the one exception worth its slot — the knowledge base (see [Features](#features)) is useless to the model without it.
+The model decides when to call these — it doesn't guess at things it can look up. Kept deliberately low (11, not more): on CPU-only local inference, every tool in the schema adds real, measured latency to *every* request (see [Performance notes](#performance-notes) below), so related actions are grouped into one tool with an operation/action parameter rather than split into many single-purpose ones. `search_knowledge`, `shop_amazon`, and `order_amazon` are exceptions worth their slot — none of those capabilities exist at all without their own tool.
 
 | Tool | What it does |
 |---|---|
@@ -201,9 +221,11 @@ The model decides when to call these — it doesn't guess at things it can look 
 | `get_system_info` | Read-only OS/CPU/disk info about the host machine |
 | `file_ops` | Read, write, or list files in a sandbox directory (`data/sandbox/`) — set `operation` to `read`/`write`/`list`. Can't touch the rest of your filesystem |
 | `execute_python` | Runs a Python snippet in an isolated subprocess with a timeout |
-| `manage_reminders` | Add, list, or complete reminders — set `action` to `add`/`list`/`complete` |
+| `manage_reminders` | Add, list, complete, update, or delete reminders — set `action` accordingly. Adding one with a due date also creates a real Google Calendar event (popup + email reminder, optionally recurring) when [Calendar is set up](#setup); otherwise it's saved in-app only. `update`/`delete` keep the linked Calendar event in sync |
 | `remember_fact` | Save a fact/preference about you for future recall |
 | `search_knowledge` | Search documents you've uploaded to the knowledge base (sidebar → Knowledge) |
+| `shop_amazon` | Search Amazon for a product — opens a real, visible browser window and returns real results (title/price/rating/link). Search only; never adds to cart or purchases anything |
+| `order_amazon` | Add a specific product (from a prior `shop_amazon` result) to cart and reach Amazon's checkout review page. Never completes the purchase — stops there and asks you to click "Place your order" yourself. Requires being logged into Amazon in the shopping browser window |
 
 To add a new tool: create a file in `tools/`, subclass `Tool` (see `tools/base.py`), and add one line to `tools/__init__.py`.
 
@@ -300,3 +322,6 @@ On a GPU-enabled machine, Ollama and Kokoro (neural TTS) share the same VRAM poo
 - `execute_python` and `file_ops` are sandboxed to `data/sandbox/` — they cannot access the rest of your filesystem.
 - `execute_python` runs with a hard timeout and no special privileges beyond the sandbox directory.
 - Assistant replies render as Markdown (see [Features](#features)), which means links in them can become real clickable `<a>` elements — including links the model might reproduce verbatim from `web_search` results on an untrusted page. `ConversationPanel.tsx` only renders `http:`/`https:`/`mailto:` links as clickable; anything else (`javascript:`, `data:`, ...) renders as inert plain text instead.
+- `shop_amazon` is search-only (Tier 1) — it never adds to cart, logs in, or attempts checkout. `order_amazon` (Tier 2) advances one step further — adds to cart and reaches checkout review — but **completing a purchase is a deliberate non-goal, enforced structurally, not just prompted against**: `tools/order_tool.py` simply contains no code path that clicks a final "Place your order" button, so no instruction (from the user, or a prompt-injection attempt via an untrusted page) can make it complete a real purchase — the capability doesn't exist to be misused. This isn't just caution for its own sake: Amazon's Terms of Service explicitly prohibit automated purchasing (and its bot detection can flag/suspend the account it runs against), and finishing a real payment with no human confirmation is squarely the kind of irreversible action this app's own system prompt already requires confirming first (reinforced by an explicit rule there too — see `config.py`). A fully autonomous Tier 3 is technically buildable on the same foundation, but would need to be a separate, explicitly opt-in mode with hard guardrails (a spending cap, a second confirmation channel) — never the default.
+- `order_amazon` never automates logging into Amazon — it only checks whether the dedicated shopping browser window (a profile under `data/browser_profile/`, separate from your everyday Chrome) is already signed in, and tells you plainly to sign in yourself if not. No Amazon credentials are ever entered, stored, or seen by this app's code.
+- `integrations/google_calendar.py`'s OAuth token (`data/google_token.json`) and client secret (`data/google_credentials.json`) are local files under the already-gitignored `data/` directory — never committed, and used only to call Google's own Calendar API directly (nothing routes through a third party).

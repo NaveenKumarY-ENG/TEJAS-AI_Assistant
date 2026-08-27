@@ -548,3 +548,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except WebSocketDisconnect:
         logger.info("Client disconnected (session %d)", agent.session_id)
+    except RuntimeError as e:
+        # Starlette raises RuntimeError (not WebSocketDisconnect) when
+        # receive_text() is called on a connection that was already torn
+        # down before this loop got back around to it — confirmed live: a
+        # client that vanishes while a long agent turn is still running in
+        # the background thread (asyncio.to_thread(run) above) never gets a
+        # chance to surface as a clean WebSocketDisconnect, since nothing
+        # was awaiting receive() at the moment it actually disconnected.
+        # The connection is just as gone either way, so this is treated the
+        # same as a normal disconnect rather than an unhandled crash.
+        logger.info("Client disconnected mid-turn (session %d): %s", agent.session_id, e)

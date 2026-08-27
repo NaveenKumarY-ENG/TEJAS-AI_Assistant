@@ -82,6 +82,26 @@ def _is_knowledge_listing_query(text: str) -> bool:
     return bool(_KNOWLEDGE_LISTING_RE.search(text))
 
 
+# Same reasoning as _is_knowledge_listing_query above, confirmed live the
+# identical way: a "list my reminders" (or "delete"/"reschedule my X
+# reminder") exchange got memorized, and a later "list my reminders" turn
+# recalled that OLD exchange as "relevant past context" and used it as
+# supporting grounding for repeating the exact same wrong answer — in one
+# live case, a completely fabricated "Buy milk" reminder that never existed
+# kept resurfacing in later turns even though it was never in the real
+# database. Reminders are exactly as volatile as VOLATILE_TOOLS/knowledge-
+# base listings: the underlying data can change (add/update/complete/
+# delete) at any moment, so a memorized answer about them has no way to
+# know it's gone stale. Matching broadly ("reminder" alone, no attempt to
+# distinguish add/list/update/delete) is safe — a false positive only means
+# "skip remembering," never a wrong answer.
+_REMINDER_QUERY_RE = re.compile(r"remind(er|ers|ing)?\b", re.IGNORECASE)
+
+
+def _is_reminder_query(text: str) -> bool:
+    return bool(_REMINDER_QUERY_RE.search(text))
+
+
 class Agent:
     def __init__(self, session_id: int | None = None, resume: bool = False):
         """
@@ -175,6 +195,19 @@ class Agent:
         """
         parts = [config.current_time_context()]
 
+        reminder_listing = structured.reminder_listing()
+        if reminder_listing:
+            parts.append(
+                "Your current reminders (for reference — use this to answer 'list my "
+                "reminders' directly, and to find the correct reminder_id when asked to "
+                "update/complete/delete one by description, rather than guessing):\n"
+                + reminder_listing
+                + "\n\nThis listing is read-only reference material. If the user asks to add, "
+                "update, complete, or delete a reminder, you must still call manage_reminders "
+                "for it right now — this listing reflects the state BEFORE any action you take "
+                "this turn, so it will look unchanged until you actually call the tool."
+            )
+
         listing = knowledge.document_listing()
         if listing:
             parts.append("Documents currently in the knowledge base (for reference — use search_knowledge or the content below for details on any of them):\n" + listing)
@@ -237,6 +270,7 @@ class Agent:
             and not kb_results
             and not _is_volatile_query(user_input)
             and not _is_knowledge_listing_query(user_input)
+            and not _is_reminder_query(user_input)
         ):
             vector.remember(f"User: {user_input}\nAssistant: {final_text}")
         return final_text
@@ -314,6 +348,7 @@ class Agent:
                     used_volatile_tool = True
                 if on_tool:
                     on_tool(fn["name"])
+                logger.debug("Tool %s(%s)", fn["name"], fn.get("arguments", {}))
                 result = execute_tool(fn["name"], fn.get("arguments", {}))
                 logger.debug("Tool %s -> %s", fn["name"], str(result)[:200])
                 if on_tool_result:
@@ -337,6 +372,7 @@ class Agent:
             and not kb_results
             and not _is_volatile_query(user_input)
             and not _is_knowledge_listing_query(user_input)
+            and not _is_reminder_query(user_input)
         ):
             vector.remember(f"User: {user_input}\nAssistant: {final}")
         return final
@@ -369,6 +405,7 @@ class Agent:
                 fn = call["function"]
                 if fn["name"] in VOLATILE_TOOLS:
                     used_volatile_tool = True
+                logger.debug("Tool %s(%s)", fn["name"], fn.get("arguments", {}))
                 result = execute_tool(fn["name"], fn.get("arguments", {}))
                 logger.debug("Tool %s -> %s", fn["name"], str(result)[:200])
                 self._record("tool", result, name=fn["name"])

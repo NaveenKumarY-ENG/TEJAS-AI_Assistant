@@ -41,5 +41,23 @@ watchdog>=4.0.0
 easyocr>=1.7.0
 pymupdf>=1.24.0  # renders scanned PDF pages to images for OCR fallback — no poppler/system dep needed
 
+# Real Google Calendar reminders (integrations/google_calendar.py) — google-auth
+# itself comes in transitively via google-genai, but the OAuth consent flow and
+# the actual Calendar API client need these two explicitly.
+google-auth-oauthlib>=1.0.0
+google-api-python-client>=2.0.0
+# Resolves this machine's real IANA zone name (e.g. "Asia/Calcutta") — needed
+# because Google Calendar rejects a recurring event with only a fixed UTC
+# offset (confirmed live: "400: Missing time zone definition for start
+# time"), and Windows has no native IANA zone name to read directly.
+tzlocal>=5.0
+
+# Amazon shopping tool (integrations/browser.py, tools/shopping_tool.py) — a real
+# browser Playwright drives. `pip install` alone does NOT download a browser
+# binary: also run `playwright install chromium` once, separately (see
+# README.md's Setup section) — integrations/browser.py's available() check
+# fails gracefully until that's done.
+playwright>=1.40.0
+
 # Development / testing only
 pytest>=8.0.0

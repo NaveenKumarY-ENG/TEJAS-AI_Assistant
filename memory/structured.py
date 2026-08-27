@@ -11,6 +11,29 @@ from datetime import datetime
 from config import config
 
 
+def format_due(due_at: str | None) -> str:
+    """Human-readable date/time — e.g. "Wednesday, September 05, 2026 at
+    10:00 AM" — for both tools/memory_tool.py's chat replies AND
+    reminder_listing()'s ambient per-turn context below. Centralized here
+    (rather than left to the model to compute a weekday from a raw ISO
+    date) after a confirmed-live bug: given only raw ISO dates, a 7B local
+    model tried to work out weekday names itself and got them wrong,
+    including contradicting itself across two consecutive calendar dates in
+    the same reply. Falls back to the raw string for anything not a clean
+    ISO datetime (e.g. a legacy free-text due_at from before this existed,
+    like "tomorrow"), since that's still meaningful to show as-is.
+    Windows-safe: strftime's %-d/%-e no-leading-zero directives aren't
+    portable, so this just accepts the zero-padded day (e.g. "September 05")
+    rather than reaching for a platform-specific workaround."""
+    if not due_at:
+        return ""
+    try:
+        dt = datetime.fromisoformat(due_at)
+    except ValueError:
+        return due_at
+    return dt.strftime("%A, %B %d, %Y at %I:%M %p")
+
+
 @contextmanager
 def _connect():
     conn = sqlite3.connect(config.sqlite_path)
@@ -41,6 +64,19 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             )"""
         )
+        # Added for real Google Calendar reminders (integrations/google_calendar.py)
+        # — links a reminder to the Calendar event carrying its actual popup/email
+        # notification, so completing the reminder can also delete that event.
+        # NULL for a reminder saved before Calendar was configured/available.
+        reminder_columns = {row["name"] for row in conn.execute("PRAGMA table_info(reminders)")}
+        if "calendar_event_id" not in reminder_columns:
+            conn.execute("ALTER TABLE reminders ADD COLUMN calendar_event_id TEXT")
+        # "none"/"daily"/"weekly"/"monthly" — mirrors the Calendar event's own
+        # RRULE (see integrations/google_calendar.py's _build_rrule), kept
+        # here too so the UI/API can show a reminder is recurring without a
+        # round trip to Google.
+        if "recurrence" not in reminder_columns:
+            conn.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT NOT NULL DEFAULT 'none'")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,13 +178,87 @@ def get_facts(key: str | None = None) -> list[dict]:
 # Reminders
 # ----------------------------------------------------------------------
 
-def add_reminder(text: str, due_at: str | None = None) -> int:
+def add_reminder(
+    text: str, due_at: str | None = None, calendar_event_id: str | None = None, recurrence: str = "none"
+) -> int:
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO reminders (text, due_at, created_at) VALUES (?, ?, ?)",
-            (text, due_at, datetime.utcnow().isoformat()),
+            "INSERT INTO reminders (text, due_at, calendar_event_id, recurrence, created_at) VALUES (?, ?, ?, ?, ?)",
+            (text, due_at, calendar_event_id, recurrence, datetime.utcnow().isoformat()),
         )
         return cur.lastrowid
+
+
+def get_reminder(reminder_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def update_reminder(reminder_id: int, text: str | None = None, due_at: str | None = None) -> bool:
+    """Partial update — only overwrites fields actually given. Does not
+    touch calendar_event_id/recurrence (a rescheduled reminder keeps the
+    same Calendar event and recurrence, just moves)."""
+    fields, values = [], []
+    if text is not None:
+        fields.append("text = ?")
+        values.append(text)
+    if due_at is not None:
+        fields.append("due_at = ?")
+        values.append(due_at)
+    if not fields:
+        return False
+    values.append(reminder_id)
+    with _connect() as conn:
+        cur = conn.execute(f"UPDATE reminders SET {', '.join(fields)} WHERE id = ?", values)
+        return cur.rowcount > 0
+
+
+def reminder_listing() -> str:
+    """A compact one-line-per-reminder summary (id, text, due date,
+    recurrence) for agent/loop.py's per-turn context — same fix already
+    applied to the knowledge base's document listing (memory/knowledge.py),
+    for the identical reason confirmed live, repeatedly: a 7B local model
+    asked to "list my reminders," or to update/delete "my X reminder" by
+    description, will sometimes skip calling manage_reminders entirely and
+    fabricate a plausible-looking answer instead — one live test invented a
+    "Buy milk" reminder that never existed, and separately used a
+    hallucinated id to silently update a real but completely unrelated
+    reminder. Giving the model the real list unconditionally, every turn,
+    means even a turn where it skips the tool call is grounded in real
+    data, and gives it the correct ids to reference for update/delete
+    instead of guessing from its own possibly-wrong memory of the
+    conversation. Returns "" when there are no active reminders, so the
+    caller can skip the section entirely.
+
+    Dates are pre-formatted via format_due() (a real weekday name, computed
+    from the actual date) rather than left as raw ISO — confirmed live as a
+    second, related bug: given only raw ISO dates here, the model tried to
+    work out weekday names itself when composing a reply and got them
+    wrong, even contradicting itself across two consecutive calendar dates
+    in the same answer. Handing it an already-correct weekday leaves
+    nothing for it to (mis)compute."""
+    reminders = list_reminders()
+    if not reminders:
+        return ""
+    lines = []
+    for r in reminders:
+        line = f"- #{r['id']}: {r['text']}"
+        if r["due_at"]:
+            line += f" (due {format_due(r['due_at'])})"
+        if r.get("recurrence", "none") != "none":
+            line += f" [repeats {r['recurrence']}]"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def delete_reminder(reminder_id: int) -> bool:
+    """Real deletion — distinct from complete_reminder's soft done=1.
+    "delete" means it shouldn't exist; "complete" means done, kept as a
+    record."""
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+        return cur.rowcount > 0
 
 
 def list_reminders(include_done: bool = False) -> list[dict]:

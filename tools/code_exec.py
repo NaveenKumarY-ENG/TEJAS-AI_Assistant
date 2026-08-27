@@ -24,8 +24,9 @@ TIMEOUT_SECONDS = 10
 class CodeExecutionTool(Tool):
     name = "execute_python"
     description = (
-        f"Run a short Python snippet (stdout/stderr returned) for calculations or quick scripts. "
-        f"Isolated subprocess, {TIMEOUT_SECONDS}s timeout."
+        f"Run a short Python snippet for calculations or quick scripts. Only stdout is "
+        f"returned — the code MUST call print(...) on whatever value you need to see, or "
+        f"you will get nothing back. Isolated subprocess, {TIMEOUT_SECONDS}s timeout."
     )
     input_schema = {
         "type": "object",
@@ -34,6 +35,7 @@ class CodeExecutionTool(Tool):
     }
 
     def run(self, code: str) -> str:
+        script_path = None
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".py", dir=config.sandbox_dir, delete=False
@@ -48,14 +50,30 @@ class CodeExecutionTool(Tool):
                 timeout=TIMEOUT_SECONDS,
                 cwd=config.sandbox_dir,
             )
-            Path(script_path).unlink(missing_ok=True)
 
             output = result.stdout.strip()
             error = result.stderr.strip()
             if error:
                 return f"stdout:\n{output}\n\nstderr:\n{error}"
-            return output if output else "(code ran with no output)"
+            # Confirmed live: a model asked to compute "347*892-1500" wrote code
+            # that never called print(), got this back empty three times, then
+            # confidently stated a wrong number from its own head rather than
+            # admitting the tool gave it nothing — an explicit nudge here (not
+            # just the tool description) gives it a concrete next step instead
+            # of silence to fill in with a guess.
+            return output if output else (
+                "(no output — your code didn't print() anything. Add a print() "
+                "call for the value you need and try again.)"
+            )
         except subprocess.TimeoutExpired:
             return f"Execution timed out after {TIMEOUT_SECONDS}s."
         except Exception as e:
             return f"Error executing code: {e}"
+        finally:
+            # Was previously only deleted on the success path — a timeout or
+            # any other exception raised by subprocess.run() skipped this
+            # entirely, leaking the temp script into the sandbox forever.
+            # Confirmed live: a real QA sweep's sandbox listing turned up ~19
+            # orphaned tmp*.py files accumulated exactly this way.
+            if script_path:
+                Path(script_path).unlink(missing_ok=True)

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent.loop import Agent, _is_knowledge_listing_query, _is_volatile_query
+from agent.loop import Agent, _is_knowledge_listing_query, _is_reminder_query, _is_volatile_query
 
 
 def test_is_volatile_query_detects_time_and_weather_questions():
@@ -36,6 +36,22 @@ def test_is_knowledge_listing_query_detects_real_reported_phrasings():
 def test_is_knowledge_listing_query_ignores_unrelated_questions():
     assert not _is_knowledge_listing_query("what does AIML.pdf cover")
     assert not _is_knowledge_listing_query("explain how neural networks work")
+
+
+def test_is_reminder_query_detects_real_reported_phrasings():
+    """Every phrasing here was reproduced live and led to a stale reminder
+    answer (in one case, a completely fabricated "Buy milk" reminder that
+    never existed) resurfacing in later turns via semantic recall — this
+    must keep matching all of them."""
+    assert _is_reminder_query("List my reminders.")
+    assert _is_reminder_query("Remind me every Monday at 9am to submit my weekly timesheet.")
+    assert _is_reminder_query("Reschedule my timesheet reminder to 2pm instead.")
+    assert _is_reminder_query("Delete my timesheet reminder.")
+
+
+def test_is_reminder_query_ignores_unrelated_questions():
+    assert not _is_reminder_query("what's the weather like today")
+    assert not _is_reminder_query("explain how neural networks work")
 
 
 def _make_agent() -> Agent:
@@ -100,6 +116,31 @@ def test_messages_for_llm_omits_listing_section_when_knowledge_base_empty():
         agent = _make_agent()
         messages, _ = agent._messages_for_llm("what's 2+2")
     assert "Documents currently in the knowledge base" not in messages[-1]["content"]
+
+
+def test_messages_for_llm_includes_reminder_listing_unconditionally():
+    """Regression test for a real bug found live: asked to 'list my
+    reminders,' a 7B local model sometimes skipped calling manage_reminders
+    entirely and fabricated a plausible-looking answer instead — one live
+    test invented a "Buy milk" reminder that never existed. Same fix as
+    knowledge.document_listing() above: the real list must be ambient,
+    present every turn, not dependent on the model deciding to call the tool."""
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.structured.reminder_listing", return_value="- #3: Submit weekly timesheet (due 2026-08-31T09:00:00) [repeats weekly]"
+    ):
+        agent = _make_agent()
+        messages, _ = agent._messages_for_llm("what's 2+2")
+    assert "Submit weekly timesheet" in messages[-1]["content"]
+    assert "Your current reminders" in messages[-1]["content"]
+
+
+def test_messages_for_llm_omits_reminder_section_when_no_reminders():
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.structured.reminder_listing", return_value=""
+    ):
+        agent = _make_agent()
+        messages, _ = agent._messages_for_llm("what's 2+2")
+    assert "Your current reminders" not in messages[-1]["content"]
 
 
 def _fake_stream(text: str):
@@ -193,6 +234,31 @@ def test_chat_streaming_never_memorizes_a_knowledge_listing_answer():
         agent.chat_streaming(
             "What do we have in the knowledge base currently?", on_chunk=lambda _: None
         )
+    mock_remember.assert_not_called()
+
+
+def test_chat_streaming_never_memorizes_a_reminder_answer():
+    """Regression test for a real bug found live: a 'list my reminders'
+    exchange got memorized, and a LATER 'list my reminders' turn recalled
+    that old exchange as "relevant past context" — in one confirmed case,
+    reinforcing a completely fabricated "Buy milk" reminder that never
+    existed in the real database, which kept resurfacing turn after turn.
+    Reminders are exactly as volatile as knowledge-base listings and
+    VOLATILE_TOOLS: the underlying data can change (add/update/complete/
+    delete) at any moment, so a memorized answer about them has no way to
+    know it's gone stale."""
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.structured.reminder_listing", return_value="- #1: Buy milk"), patch(
+        "agent.loop.vector.recall", return_value=[]
+    ), patch(
+        "agent.loop.vector.remember"
+    ) as mock_remember, patch(
+        "agent.loop.call_llm_streaming",
+        return_value=_fake_stream("You have one reminder: Buy milk."),
+    ):
+        agent = _make_agent()
+        agent.chat_streaming("List my reminders.", on_chunk=lambda _: None)
     mock_remember.assert_not_called()
 
 

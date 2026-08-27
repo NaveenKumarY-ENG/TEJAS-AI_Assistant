@@ -58,7 +58,33 @@ def test_code_execution_timeout():
     assert "timed out" in result.lower()
 
 
+def test_code_execution_cleans_up_temp_script_after_timeout():
+    """A timeout must not leak the temp .py script into the sandbox forever
+    — confirmed live as a real bug: cleanup previously only ran on the
+    success path, so every timed-out call left an orphaned tmp*.py file
+    behind (a real QA sweep's sandbox listing turned up ~19 of them)."""
+    from config import config
+
+    tool = CodeExecutionTool()
+    before = set(Path(config.sandbox_dir).glob("tmp*.py"))
+    tool.run(code="import time; time.sleep(30)")
+    after = set(Path(config.sandbox_dir).glob("tmp*.py"))
+    assert after == before
+
+
 def test_code_execution_captures_errors():
     tool = CodeExecutionTool()
     result = tool.run(code="1 / 0")
     assert "ZeroDivisionError" in result
+
+
+def test_code_execution_no_print_gives_actionable_hint_not_bare_silence():
+    # Confirmed live as a real bug: asked to compute "347*892-1500", the
+    # model wrote code that never called print(), got an unhelpful empty
+    # result back three times in a row, then fabricated a confident but
+    # wrong final answer instead of admitting the tool gave it nothing. A
+    # concrete hint here (instead of a bare "no output") gives it something
+    # to act on other than guessing.
+    tool = CodeExecutionTool()
+    result = tool.run(code="x = 2 + 2")
+    assert "print(" in result.lower()

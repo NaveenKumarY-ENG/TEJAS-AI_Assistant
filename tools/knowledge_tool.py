@@ -19,7 +19,12 @@ from tools.base import Tool
 
 class SearchKnowledgeTool(Tool):
     name = "search_knowledge"
-    description = "Search documents/notes/images/PDFs the user has uploaded to their knowledge base, with a query different from (or more specific than) the user's own message."
+    description = (
+        "Search documents/notes/images/PDFs the user has UPLOADED to their knowledge base, with a "
+        "query different from (or more specific than) the user's own message. Only call this for "
+        "questions actually about the user's own uploaded material — never for general knowledge, "
+        "calculations, weather, dates, system info, or anything another tool already handles."
+    )
     input_schema = {
         "type": "object",
         "properties": {"query": {"type": "string", "description": "What to search for"}},
