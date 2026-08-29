@@ -1,8 +1,18 @@
 // Every tunable timing/threshold introduced by the voice pipeline rework,
 // named so magic numbers don't get scattered across hooks/components.
 
-/** ms of sustained quiet after detected speech before auto-stopping the mic. */
-export const SILENCE_TIMEOUT_MS = 1200;
+/** ms of sustained quiet after detected speech before auto-stopping the mic.
+ *  Regression fix: 1200ms was confirmed live to cut off real speech mid-
+ *  question — a completely ordinary mid-sentence pause (a breath, a beat
+ *  to think, "um...") easily runs past 1.2s, and once VAD auto-stops
+ *  everything the user says after that pause is silently discarded, never
+ *  even reaching the recording — not a transcription-quality issue, the
+ *  audio itself never gets captured. Reproduced directly: a two-part
+ *  utterance with a realistic 1.5s pause in the middle came back
+ *  transcribing only the first part. 2200ms gives real conversational
+ *  pauses room without making the auto-stop feel unresponsive once the
+ *  user is actually done talking. */
+export const SILENCE_TIMEOUT_MS = 2200;
 
 /**
  * Master switch for voice-activity-detection auto-stop. OFF by default:

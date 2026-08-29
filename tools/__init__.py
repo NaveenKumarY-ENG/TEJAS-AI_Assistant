@@ -13,14 +13,16 @@ from tools.web_search import WebSearchTool
 from tools.knowledge_tool import SearchKnowledgeTool
 from tools.shopping_tool import ShopAmazonTool
 from tools.order_tool import OrderAmazonTool
+from tools.cart_tool import ViewCartTool
 
-# Kept deliberately low (11, up from 8 originally) — read/write/list files
+# Kept deliberately low (12, up from 8 originally) — read/write/list files
 # and add/list/complete/update/delete reminders are each one tool with an
 # operation/action parameter instead of many. On CPU-only local inference
 # every tool in this list adds real, measured prompt-processing latency to
 # every request (see agent/llm_client.py), so tool count directly affects
-# response time — search_knowledge, shop_amazon, and order_amazon each earn
-# their spot on capability alone (none of those exist without their own tool).
+# response time — search_knowledge, shop_amazon, order_amazon, and
+# view_amazon_cart each earn their spot on capability alone (none of those
+# exist without their own tool).
 ALL_TOOLS: list[Tool] = [
     WebSearchTool(),
     WeatherTool(),
@@ -33,6 +35,7 @@ ALL_TOOLS: list[Tool] = [
     SearchKnowledgeTool(),
     ShopAmazonTool(),
     OrderAmazonTool(),
+    ViewCartTool(),
 ]
 
 TOOL_MAP: dict[str, Tool] = {tool.name: tool for tool in ALL_TOOLS}

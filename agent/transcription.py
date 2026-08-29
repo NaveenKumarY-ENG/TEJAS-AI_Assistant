@@ -52,12 +52,27 @@ def _join_confident_segments(segments) -> tuple[str, int, int]:
     """Filters out low-confidence segments (see _MAX_NO_SPEECH_PROB's
     comment) before joining. Returns (text, kept_count, dropped_count) —
     the counts are for logging, so a hallucination-rejection is visible in
-    the logs rather than silently indistinguishable from genuine silence."""
+    the logs rather than silently indistinguishable from genuine silence.
+    Each dropped segment's own text/scores are logged individually (not
+    just the count) — the difference between "this really was silence"
+    and "this was real speech the threshold rejected" is otherwise
+    invisible after the fact, and a "no speech detected" report with
+    nothing to go on is much harder to act on than one with the actual
+    no_speech_prob/avg_logprob values that triggered it."""
     kept = []
     dropped = 0
     for segment in segments:
         if segment.no_speech_prob > _MAX_NO_SPEECH_PROB or segment.avg_logprob < _MIN_AVG_LOGPROB:
             dropped += 1
+            logger.info(
+                "Dropped low-confidence segment %r (no_speech_prob=%.3f, avg_logprob=%.3f, thresholds: "
+                "no_speech_prob<=%.2f, avg_logprob>=%.2f)",
+                segment.text.strip(),
+                segment.no_speech_prob,
+                segment.avg_logprob,
+                _MAX_NO_SPEECH_PROB,
+                _MIN_AVG_LOGPROB,
+            )
             continue
         kept.append(segment.text.strip())
     return " ".join(kept).strip(), len(kept), dropped

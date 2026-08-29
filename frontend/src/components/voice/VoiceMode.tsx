@@ -284,7 +284,7 @@ export function VoiceMode({ coreState, onSend, stopSpeaking, ttsBoundaryRef, onE
               display glitch. With min-h-0, THIS shrinks first and
               ConversationPanel's own overflow-y-auto scrolls internally
               instead, guaranteeing the footer stays visible always. */}
-          <div className="min-h-0 flex-1">
+          <div className="flex min-h-0 flex-1 flex-col">
             <ConversationPanel compactEmptyHint />
           </div>
 

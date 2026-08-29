@@ -212,7 +212,13 @@ export function useSpeechRecognition(
           revealTimeoutRef.current = window.setTimeout(() => setRevealText(null), TRANSCRIPT_REVEAL_MS);
         } else {
           hadError = true;
-          enterError("Didn't catch that — no speech detected.");
+          // Actionable, not just descriptive — "no speech detected" alone
+          // gives someone who KNOWS they spoke nothing to actually try
+          // differently next time. The two most common real causes are
+          // mic volume/distance and background noise; the backend's own
+          // logs (agent/transcription.py) carry the exact confidence
+          // scores behind any given rejection for deeper debugging.
+          enterError("Didn't catch that — try speaking a bit louder or closer to the mic.");
         }
       } catch (err) {
         hadError = true;

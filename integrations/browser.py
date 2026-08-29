@@ -59,6 +59,10 @@ def get_context():
                     # navigator.webdriver (applied context-wide, so every new
                     # page/tab gets it automatically) was the actual fix,
                     # reproduced directly: 0 results before this, 22 after.
+                    # Re-confirmed live on amazon.in (this app's actual
+                    # default storefront — see shopping_tool.py/order_tool.py)
+                    # after switching from amazon.com: same bypass, real
+                    # results, no CAPTCHA.
                     user_agent=(
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
