@@ -9,7 +9,14 @@ TEJAS is a full-stack personal AI assistant with a sci-fi, JARVIS-style holograp
 
 It talks back and forth by text or voice, remembers context across sessions, and can actually *do* things — search the web, check the weather, run Python, manage files in a sandbox, track reminders, and search your own uploaded documents — via a small, pluggable tool system.
 
+![TEJAS demo — asking about the weather in chat, showing the hologram react through thinking/tool-call/responding states, the live tool-call pill, and the streamed reply](screenshots/demo.gif)
+
+<details>
+<summary>Static screenshot</summary>
+
 ![TEJAS dashboard — chat with a live weather lookup, the hologram core, and the sidebar widgets](screenshots/dashboard.png)
+
+</details>
 
 ## Features
 
