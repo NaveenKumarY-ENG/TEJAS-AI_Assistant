@@ -429,6 +429,33 @@ def test_search_filters_out_irrelevant_matches():
         knowledge.delete_document(doc["id"])
 
 
+def test_search_does_not_leak_ai_ml_content_into_an_unrelated_shopping_query():
+    """Regression test for a real bug found live during the QA audit: with
+    the knowledge base holding only an AI/ML-topic document, a completely
+    unrelated Amazon shopping request ("Add Samsung Galaxy S25+ ... to
+    cart") scored a LOWER embedding distance than the old 1.6 cutoff,
+    so the ML document's content got injected as "relevant knowledge-base
+    content" into agent/loop.py's outgoing prompt for a phone-shopping
+    conversation — plausibly part of why the model then produced a
+    confused, off-task reply instead of calling order_amazon. Reproduces
+    that exact document topic and query."""
+    doc = knowledge.ingest_document(
+        "ai_notes.txt",
+        b"Advancements in deep learning have led to significant improvements "
+        b"in image and speech recognition. Common algorithms include linear "
+        b"regression, decision trees, support vector machines, and "
+        b"k-nearest neighbors used in machine learning and artificial "
+        b"intelligence research.",
+    )
+    try:
+        assert knowledge.search(
+            "Add Samsung Galaxy S25+ 5G AI Smartphone (Silver Shadow, 12GB RAM, "
+            "256GB Storage), 50MP Camera to cart."
+        ) == []
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
 def test_pdf_stays_blank_for_scanned_pages_when_ocr_unavailable():
     """Unchanged pre-Phase-4 behavior: no OCR available means a scanned page
     just contributes no text, not an error — a real-text PDF elsewhere in

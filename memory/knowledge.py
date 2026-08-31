@@ -216,16 +216,31 @@ def is_structured_table(text: str) -> bool:
     return _TABLE_HEADER in text
 
 
-# ChromaDB L2 distance cutoff, calibrated empirically against this
-# collection's embedding function: genuinely relevant matches (even loosely
-# worded) land under ~1.35, unrelated content starts around ~1.85+. Without
-# this, query() always returns its n_results nearest neighbors regardless of
-# whether anything is actually relevant — confirmed as a real problem when a
-# single noisy/garbled chunk (e.g. OCR output full of misreads) embeds to a
-# spuriously "central" vector that looks closer to unrelated queries than
-# any genuinely relevant document does, drowning out real matches and
-# surfacing content that has nothing to do with what was asked.
-_MAX_RELEVANT_DISTANCE = 1.6
+# ChromaDB L2 distance cutoff. Without this, query() always returns its
+# n_results nearest neighbors regardless of whether anything is actually
+# relevant — confirmed as a real problem when a single noisy/garbled chunk
+# (e.g. OCR output full of misreads) embeds to a spuriously "central" vector
+# that looks closer to unrelated queries than any genuinely relevant
+# document does, drowning out real matches and surfacing content that has
+# nothing to do with what was asked.
+#
+# Re-calibrated 2026-08-31 (QA audit) after finding the previous cutoff
+# (1.6, said to be based on "unrelated content starts around ~1.85+") no
+# longer matched this collection's actual behavior — a real, live-
+# reproduced bug: a completely unrelated Amazon shopping request ("Add
+# Samsung Galaxy S25+ ... to cart") scored a *lower* distance (1.417) than
+# this constant, so an ML/AI document's content about "deep learning"
+# and "image and speech recognition" was injected as "relevant knowledge-
+# base content" into a phone-shopping conversation — plausibly part of why
+# the model then went on to give a confused, off-task response. Freshly
+# measured on the actual current collection: genuinely relevant queries
+# land at 0.61-0.73, genuinely unrelated ones at 1.64-1.89 — a threshold in
+# that gap is what the number below now reflects. This value is a property
+# of the CURRENT document set (fewer/different documents shift the "nearest
+# neighbor" floor), not a universal constant — worth re-checking with the
+# same kind of direct query-distance measurement if it starts looking wrong
+# again as the knowledge base's contents change.
+_MAX_RELEVANT_DISTANCE = 1.2
 
 
 def _filenames_mentioned_in(query: str) -> set[str]:

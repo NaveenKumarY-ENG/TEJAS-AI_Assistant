@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent.loop import Agent, _is_knowledge_listing_query, _is_reminder_query, _is_volatile_query
+from agent.loop import Agent, _is_cart_request_query, _is_knowledge_listing_query, _is_reminder_query, _is_volatile_query
 
 
 def test_is_volatile_query_detects_time_and_weather_questions():
@@ -57,6 +57,39 @@ def test_is_reminder_query_detects_real_reported_phrasings():
 def test_is_reminder_query_ignores_unrelated_questions():
     assert not _is_reminder_query("what's the weather like today")
     assert not _is_reminder_query("explain how neural networks work")
+
+
+def test_is_cart_request_query_detects_real_reported_phrasing():
+    """QA audit finding B-005: this exact phrasing (reproduced 3x live)
+    silently never resulted in a cart action at all — the model called
+    shop_amazon alone and narrated accessory recommendations instead. Must
+    keep matching this and close variants."""
+    assert _is_cart_request_query(
+        "Add Samsung Galaxy S25+ 5G AI Smartphone (Silver Shadow, 12GB RAM, "
+        "256GB Storage), 50MP Camera to cart."
+    )
+    assert _is_cart_request_query("add the iQOO Z11 to my cart")
+    assert _is_cart_request_query("please put this in my cart")
+    assert _is_cart_request_query("Add it to the cart")
+    # Regression: found live right after the initial B-005 fix shipped —
+    # "to my Amazon cart" (an extra word between "my" and "cart") is
+    # completely natural phrasing that the original pattern missed
+    # entirely, silently reproducing the exact same routing failure this
+    # regex exists to prevent.
+    assert _is_cart_request_query("Add a cheap plastic pen (under 50 rupees) to my Amazon cart.")
+    assert _is_cart_request_query("add this to my amazon.in cart")
+
+
+def test_is_cart_request_query_ignores_ambiguous_purchase_phrasing():
+    """Deliberately does NOT match "order"/"buy" alone — those are too
+    ambiguous (ordering food, buying a stock) and risk the opposite
+    failure: forcing a real Amazon cart action nobody asked for. Only the
+    unambiguous "add/put ... to/in cart" phrasing is treated as a strong
+    enough signal to override the model's own tool choice."""
+    assert not _is_cart_request_query("order me a pizza for dinner")
+    assert not _is_cart_request_query("should I buy this stock")
+    assert not _is_cart_request_query("what's in my cart right now")
+    assert not _is_cart_request_query("how much is in my shopping cart")
 
 
 def _make_agent() -> Agent:
@@ -146,6 +179,35 @@ def test_messages_for_llm_omits_reminder_section_when_no_reminders():
         agent = _make_agent()
         messages, _ = agent._messages_for_llm("what's 2+2")
     assert "Your current reminders" not in messages[-1]["content"]
+
+
+def test_messages_for_llm_reinforces_order_amazon_for_a_cart_request():
+    """QA audit finding B-005: a static system-prompt rule alone did NOT
+    fix this — the model kept calling shop_amazon alone and narrating
+    accessory recommendations instead of ever calling order_amazon. Same
+    fix shape as the reminder-listing bug above: reinforce the instruction
+    right next to the user's own message, every matching turn, rather than
+    relying on a rule buried in the (cached, rarely re-attended-to) static
+    system prompt."""
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.structured.reminder_listing", return_value=""
+    ):
+        agent = _make_agent()
+        messages, _ = agent._messages_for_llm(
+            "Add Samsung Galaxy S25+ 5G AI Smartphone (Silver Shadow, 12GB RAM, "
+            "256GB Storage), 50MP Camera to cart."
+        )
+    assert "must call order_amazon" in messages[-1]["content"].lower()
+    assert "do not call shop_amazon alone" in messages[-1]["content"].lower()
+
+
+def test_messages_for_llm_omits_cart_directive_for_unrelated_messages():
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.structured.reminder_listing", return_value=""
+    ):
+        agent = _make_agent()
+        messages, _ = agent._messages_for_llm("what's the weather like today")
+    assert "order_amazon" not in messages[-1]["content"]
 
 
 def _fake_stream(text: str):

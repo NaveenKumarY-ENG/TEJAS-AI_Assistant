@@ -1,5 +1,8 @@
 # TEJAS — Personal AI Assistant
 
+[![CI](https://github.com/NaveenKumarY-ENG/TEJAS-AI_Assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/NaveenKumarY-ENG/TEJAS-AI_Assistant/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 *An Indian AI voice assistant, just like JARVIS.*
 
 TEJAS is a full-stack personal AI assistant with a sci-fi, JARVIS-style holographic interface. It runs entirely on your own machine by default (local LLM via Ollama, local speech-to-text via Whisper, local SQLite/ChromaDB memory), with optional cloud backends (Anthropic Claude, OpenAI Whisper) you can switch on when you want stronger reasoning or accuracy.
@@ -35,18 +38,42 @@ Knowledge base search runs automatically on every turn (`agent/loop.py`), the sa
 
 ## Architecture
 
-```
-Browser (React + Three.js) ⇄ WebSocket /ws ⇄ FastAPI (server.py) ⇄ Agent loop (agent/loop.py)
-                                                                         │
-                                                          ┌──────────────┼──────────────┐
-                                                          │              │              │
-                                                     LLM client      Tools          Memory
-                                                (Ollama / Anthropic)  (tools/)  (SQLite + ChromaDB)
+```mermaid
+flowchart LR
+    UI["Browser<br/>React + Three.js<br/>(hologram, chat, Voice Mode)"]
+
+    UI <-->|"WebSocket /ws<br/>+ REST API"| Server["FastAPI<br/>server.py"]
+    Server --> Loop["Agent loop<br/>agent/loop.py"]
+
+    Loop --> LLM["LLM client<br/>agent/llm_client.py"]
+    LLM --> Providers["Ollama (local, default)<br/>Anthropic · Gemini"]
+
+    Loop --> Tools["Tool system<br/>tools/ (12 tools)"]
+    Tools --> Shopping["Amazon shopping<br/>shop / order / cart"]
+    Tools --> Other["Reminders · Weather · Web search<br/>Code exec · Files · Knowledge search"]
+
+    Loop --> Memory["Memory & RAG<br/>memory/"]
+    Memory --> SQLite[("SQLite<br/>sessions · reminders · facts")]
+    Memory --> Chroma[("ChromaDB<br/>semantic recall + knowledge base")]
+    Memory --> Ingest["Ingestion pipeline<br/>PDF / DOCX / image / URL<br/>OCR + structured extraction"]
+
+    Shopping --> Browser["Playwright<br/>integrations/browser.py"]
+    Browser -.->|"real, visible window"| Amazon[("amazon.in")]
+    Other --> Calendar["integrations/google_calendar.py"]
+    Calendar -.-> GCal[("Google Calendar")]
+
+    style UI fill:#8b5cf6,color:#fff
+    style Loop fill:#3b82f6,color:#fff
+    style Amazon fill:#f59e0b,color:#000
+    style GCal fill:#f59e0b,color:#000
 ```
 
 - **Backend**: Python, FastAPI, a single WebSocket endpoint that streams the conversation turn by turn. The agent loop calls the LLM, executes any tool calls it requests, feeds results back, and repeats until it produces a final answer.
 - **Frontend**: React 19 + TypeScript + Vite, with a Three.js/`@react-three/fiber` hologram rendered full-bleed behind a floating chat UI, styled with Tailwind CSS v4 and state managed by Zustand.
-- **Persistence**: SQLite for chat sessions/messages/reminders/facts (`memory/structured.py`), ChromaDB for semantic recall (`memory/vector.py`).
+- **Persistence**: SQLite for chat sessions/messages/reminders/facts (`memory/structured.py`), ChromaDB for semantic recall (`memory/vector.py`) and the knowledge base (`memory/knowledge.py`) — two separate collections, since an uploaded document is a trusted source and a recalled chat snippet isn't (see [Features](#features)).
+- **Integrations**: `integrations/browser.py` drives a real, visible Chromium window (Playwright) against amazon.in for the shopping tools; `integrations/google_calendar.py` syncs reminders to a real Google Calendar via OAuth. Both are lazily initialized — nothing launches until the first tool call that actually needs it.
+
+> **Known limitation**: model/voice selection (`config.py`) is a single process-wide setting, not scoped per browser tab or session — switching the active model in one open tab changes it for every other tab/session talking to the same running server. Fine for the single-user, single-active-session use this app is built for; worth knowing if you ever have multiple tabs open at once.
 
 > The sidebar's Weather widget is **not** wired to the `get_weather` tool — it's an independent client-side fetch straight from Open-Meteo (`WeatherWidget.tsx`), separate from the backend's `tools/weather.py` that the AI calls when you *ask* about weather in chat. Both happen to hit the same free API, but changing one does not affect the other.
 
@@ -158,9 +185,19 @@ cd frontend
 npm install
 ```
 
+### Docker (alternative to the above)
+
+```bash
+docker compose up --build
+# once it's up, pull a model into it (first time only):
+docker compose exec ollama ollama pull qwen2.5:7b
+```
+
+Then open http://localhost:8000. This brings up Ollama and the backend together, with reminders/Calendar sync, voice, and the knowledge base all working normally. Not included: GPU acceleration for TTS/OCR (runs on CPU instead — functional, just slower) and the Amazon shopping tools, which open a real, visible browser window that doesn't fit a headless container — see `Dockerfile`'s header comment for the full reasoning. Everything else works the same as the manual setup below.
+
 ## Running
 
-You need both processes running at once, in separate terminals:
+You need both processes running at once, in separate terminals (skip this section entirely if you used Docker above):
 
 **Backend** (from the project root):
 ```bash
@@ -269,12 +306,17 @@ python -m pytest tests/ -q
 
 `tests/conftest.py` points the whole run at an isolated, throwaway data directory (`TEJAS_DATA_DIR`, cleaned up automatically after the session) instead of your real database — a knowledge-base test asserting "an unrelated query returns no results" was flaky twice before this existed, once against garbled OCR text and once against a real uploaded PDF, simply because it was checking against whatever real documents happened to be in the live knowledge base at the time.
 
-Frontend build/lint:
+Frontend build/lint/test:
 ```bash
 cd frontend
 npm run build
 npm run lint
+npm run test
 ```
+
+Frontend tests (Vitest — `frontend/src/**/*.test.ts`) cover the state layer driving the app's critical paths: sending a message and streaming a reply, tool-call UI state, session switching, and the text-processing helpers behind voice output (Markdown stripping, sentence-boundary splitting for streamed speech). Deliberately scoped to pure store/utility logic rather than full component rendering — the Three.js hologram isn't meaningfully testable in a headless environment, and this is where the actual application logic actually lives.
+
+Both this and the backend test suite run automatically on every push via GitHub Actions (see the badge at the top of this file / `.github/workflows/ci.yml`).
 
 ## Notes on accuracy
 

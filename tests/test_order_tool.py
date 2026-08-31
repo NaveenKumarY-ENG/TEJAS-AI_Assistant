@@ -305,6 +305,93 @@ def test_run_resolves_a_product_name_via_a_live_search():
     assert "iqoo z11" in result.lower()
 
 
+def test_run_refuses_to_silently_substitute_a_wrong_variant():
+    """Regression test for a real bug found live during the QA audit:
+    _best_match's whole-string similarity alone picked "Titanium Silver"
+    for a "Silver Shadow" request — a real, different, wrong-color product
+    — purely because of a coincidental substring overlap, with zero
+    disclosure. Reproduced against the actual 5 real Amazon.in results for
+    "Samsung Galaxy S25+ ... (Silver Shadow, 12GB RAM, 256GB Storage)":
+    none of them is Silver Shadow, and the tool must say so and show the
+    real alternatives rather than quietly ordering the closest-sounding
+    one. Must never reach the browser at all — this has to be caught
+    before ever navigating anywhere."""
+    query = "Samsung Galaxy S25+ 5G AI Smartphone (Silver Shadow, 12GB RAM, 256GB Storage), 50MP Camera"
+    search_outcome = {
+        "results": [
+            {"title": "Galaxy S25+ 5G (Icy Blue, 12GB RAM, 256GB Storage)", "price": "₹68,990", "rating": None, "link": "a"},
+            {"title": "Galaxy S25+ 5G (Titanium Silver, 12GB RAM, 256GB Storage)", "price": "₹60,590", "rating": None, "link": "b"},
+            {"title": "Galaxy S25+ 5G (Titanium JetBlack, 12GB RAM, 256GB Storage)", "price": "₹60,700", "rating": None, "link": "c"},
+            {"title": "Galaxy S25+ 5G (Black, 12GB RAM, 256GB Storage)", "price": "₹79,999", "rating": None, "link": "d"},
+        ]
+    }
+    with (
+        patch.object(order_tool.browser, "available", return_value=True),
+        patch.object(order_tool.browser, "get_context") as mock_get_context,
+        patch("tools.order_tool.shopping_tool.search_products", return_value=search_outcome),
+    ):
+        result = OrderAmazonTool().run(product_name=query)
+    mock_get_context.assert_not_called()  # never even opened the browser
+    assert "silver shadow" in result.lower()
+    assert "titanium silver" in result.lower()  # shows the real alternative
+    assert "₹60,590" in result
+    assert "won't substitute" in result.lower()
+
+
+def test_run_proceeds_normally_when_the_requested_variant_is_actually_found():
+    """The new check must not become a false-positive trap — when the
+    picked title genuinely does contain every attribute the user asked
+    for, ordering proceeds exactly as before."""
+    fake_page = FakePage(product_title="Galaxy S25+ 5G (Titanium Silver, 12GB RAM, 256GB Storage)")
+    search_outcome = {
+        "results": [
+            {"title": "Galaxy S25+ 5G (Titanium Silver, 12GB RAM, 256GB Storage)", "price": "₹60,590", "rating": None, "link": _TEST_URL},
+        ]
+    }
+    with (
+        patch.object(order_tool.browser, "available", return_value=True),
+        patch.object(order_tool.browser, "get_context", return_value=FakeContext(fake_page)),
+        patch("tools.order_tool.shopping_tool.search_products", return_value=search_outcome),
+    ):
+        result = OrderAmazonTool().run(product_name="Galaxy S25+ 5G (Titanium Silver, 12GB RAM, 256GB Storage)")
+    assert "added" in result.lower()
+    assert "won't substitute" not in result.lower()
+
+
+def test_requested_attributes_parses_the_parenthetical_group():
+    assert order_tool._requested_attributes(
+        "Samsung Galaxy S25+ (Silver Shadow, 12GB RAM, 256GB Storage), 50MP Camera"
+    ) == ["Silver Shadow", "12GB RAM", "256GB Storage"]
+    assert order_tool._requested_attributes("iQOO Z11") == []  # no parenthetical — nothing to check
+
+
+def test_requested_attributes_filters_out_a_price_constraint_in_parens():
+    """Regression test for a real bug found live: "a cheap plastic pen
+    (under 50 rupees)" got its price constraint extracted as if it were a
+    required product attribute exactly like a color name — which can
+    never literally appear in a product title, so order_amazon refused
+    EVERY price-constrained request phrased this way."""
+    assert order_tool._requested_attributes("a cheap plastic pen (under 50 rupees)") == []
+    assert order_tool._requested_attributes("a phone (under ₹20000)") == []
+    assert order_tool._requested_attributes("headphones (less than 1000 rs)") == []
+    # A real attribute group must still survive even with a stray price
+    # word technically present in one of its own parts (rare, but the
+    # filter is per-part, not "reject the whole group").
+    assert order_tool._requested_attributes(
+        "Phone (Silver Shadow, 12GB RAM, 256GB Storage, under budget)"
+    ) == ["Silver Shadow", "12GB RAM", "256GB Storage"]
+
+
+def test_unmatched_attributes_flags_only_the_genuinely_missing_ones():
+    name = "Phone (Silver Shadow, 12GB RAM, 256GB Storage)"
+    assert order_tool._unmatched_attributes(name, "Phone (Silver Shadow, 12GB RAM, 256GB Storage)") == []
+    assert order_tool._unmatched_attributes(name, "Phone (Titanium Silver, 12GB RAM, 256GB Storage)") == ["Silver Shadow"]
+    assert order_tool._unmatched_attributes(name, "Phone (Titanium Silver, 8GB RAM, 128GB Storage)") == [
+        "Silver Shadow", "12GB RAM", "256GB Storage"
+    ]
+    assert order_tool._unmatched_attributes("iQOO Z11", "Anything at all") == []  # nothing was requested
+
+
 def test_run_reports_when_product_name_search_finds_nothing():
     with (
         patch.object(order_tool.browser, "available", return_value=True),

@@ -1,0 +1,30 @@
+# Runtime data — persisted via the docker-compose volume mount instead,
+# never baked into the image (a stale copy inside the image would shadow
+# the real, mounted data at the same path).
+data/
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+frontend/node_modules/
+frontend/src/
+frontend/public/
+frontend/*.json
+frontend/*.ts
+frontend/*.js
+frontend/*.html
+frontend/*.md
+# frontend/dist/ is NOT excluded — the built, static frontend server.py
+# actually serves is checked into the repo and needs to reach the image.
+
+.git/
+.github/
+qa/
+.claude/
+*.md
+screenshots/
+
+.env
+.env.local

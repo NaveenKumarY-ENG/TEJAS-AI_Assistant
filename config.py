@@ -133,7 +133,14 @@ class Config:
         "has no ability to complete a purchase, no matter what it's asked to do. Never claim to "
         "have placed an order or completed a purchase. If asked to 'complete the purchase' or "
         "'place the order', explain plainly that this assistant stops at checkout review by "
-        "design and the user needs to click 'Place your order' themselves in the browser window.\n\n"
+        "design and the user needs to click 'Place your order' themselves in the browser window.\n"
+        "- When the user asks to add/order/buy a SPECIFIC product ('add X to cart', 'order this', "
+        "'buy the Y'), you MUST call order_amazon with that product (by name or link) as the very "
+        "next step. Do NOT call shop_amazon alone and then describe the search results, recommend "
+        "accessories, or suggest alternatives instead — that is not what was asked, even if the "
+        "search results include accessories or similar items alongside the actual product. If "
+        "order_amazon reports it couldn't confirm an exact match (wrong variant, not found, etc.), "
+        "relay that message plainly rather than substituting your own recommendation for it.\n\n"
         "Be concise. Confirm before doing anything destructive or irreversible."
     )
 

@@ -194,10 +194,23 @@ def _parse_anthropic_message(message) -> dict:
 def _anthropic_chat(messages: list[dict], tools: list[dict]):
     client = _get_anthropic_client()
     logger.debug("Calling Anthropic (%s) with %d messages", config.model, len(messages))
+    # temperature via extra_body, not as a direct kwarg — confirmed live as
+    # a real, total breakage: the installed anthropic SDK (1.0.0; this repo
+    # only floors it at >=0.40.0, so a fresh install pulls in whatever
+    # latest major version exists) dropped `temperature` from BOTH
+    # Messages.create()'s AND Messages.stream()'s typed signatures
+    # entirely — every single call via this provider raised
+    # "unexpected keyword argument 'temperature'" before this fix, not a
+    # rare edge case. The underlying REST API still accepts a top-level
+    # `temperature` field (per Anthropic's own API reference); extra_body
+    # is the SDK's documented mechanism for passing a real API field that
+    # isn't (or is no longer) in the method's typed parameter list —
+    # confirmed live this actually reaches the API (got a real
+    # authentication_error response back, not another TypeError).
     response = client.messages.create(
         model=config.model,
         max_tokens=config.max_tokens,
-        temperature=config.llm_temperature,
+        extra_body={"temperature": config.llm_temperature},
         system=config.static_system_prompt(),
         messages=_anthropic_messages(messages),
         tools=_anthropic_tools(tools),
@@ -210,10 +223,11 @@ def _anthropic_chat_streaming(messages: list[dict], tools: list[dict]):
     logger.debug("Streaming from Anthropic (%s) with %d messages", config.model, len(messages))
 
     def generator():
+        # See _anthropic_chat's comment — same SDK-version fix.
         with client.messages.stream(
             model=config.model,
             max_tokens=config.max_tokens,
-            temperature=config.llm_temperature,
+            extra_body={"temperature": config.llm_temperature},
             system=config.static_system_prompt(),
             messages=_anthropic_messages(messages),
             tools=_anthropic_tools(tools),

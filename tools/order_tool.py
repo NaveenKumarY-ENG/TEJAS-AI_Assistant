@@ -167,7 +167,16 @@ def _best_match(name: str, results: list[dict]) -> dict | None:
     first result if nothing scores confidently, since Amazon's own
     relevance ranking for a long, specific title (the common case here —
     the user reading out or pasting a full product name/spec dump) is
-    still a reasonable best-effort guess rather than nothing at all."""
+    still a reasonable best-effort guess rather than nothing at all.
+
+    Whole-string similarity alone is NOT enough to trust this as "the
+    right variant" — see _unmatched_attributes below, which the caller
+    must also check. Confirmed live as a real gap: "Samsung Galaxy S25+ ...
+    (Silver Shadow, 12GB RAM, 256GB Storage)" against real Amazon.in
+    results with no Silver Shadow listing at all picked "Titanium Silver"
+    (0.68 similarity, highest of the field) purely because the substring
+    "Silver" coincidentally overlaps — a real, different, wrong-color
+    product that this function alone has no way to flag as such."""
     if not results:
         return None
     name_lower = name.strip().lower()
@@ -179,6 +188,46 @@ def _best_match(name: str, results: list[dict]) -> dict | None:
     best = scored[0]
     ratio = difflib.SequenceMatcher(None, name_lower, (best["title"] or "").lower()).ratio()
     return best if ratio >= 0.3 else results[0]
+
+
+# Amazon listing titles — and users copying/reading them out — put the
+# attributes that actually distinguish variants (color, RAM, storage) in a
+# parenthetical, comma-separated group: "(Silver Shadow, 12GB RAM, 256GB
+# Storage)". Confirmed against real listings and real user phrasing (both
+# the "iQOO Z11" and "Samsung Galaxy S25+" examples tested live use exactly
+# this shape) — extracting these is what lets _unmatched_attributes check
+# whether _best_match's pick actually satisfies what was specifically asked
+# for, not just "sounds similar overall."
+_ATTRIBUTE_GROUP_RE = re.compile(r"\(([^)]+)\)")
+
+# Regression fix (found live): a price constraint the user happened to
+# parenthesize too — "a cheap plastic pen (under 50 rupees)" — was being
+# extracted as if it were a required product attribute exactly like a
+# color name, which can never literally appear in a product title, so
+# order_amazon refused EVERY price-constrained request phrased this way.
+# Filtered out per-part rather than rejecting the whole group, in case a
+# real attribute group ever legitimately mixes the two.
+_PRICE_HINT_RE = re.compile(r"\brupees?\b|\brs\.?\b|₹|\bunder\b|\bover\b|\bless than\b|\bbudget\b|\bprice\b", re.IGNORECASE)
+
+
+def _requested_attributes(name: str) -> list[str]:
+    match = _ATTRIBUTE_GROUP_RE.search(name)
+    if not match:
+        return []
+    parts = [part.strip() for part in match.group(1).split(",") if part.strip()]
+    return [p for p in parts if not _PRICE_HINT_RE.search(p)]
+
+
+def _unmatched_attributes(name: str, title: str) -> list[str]:
+    """Which of the user's explicitly-requested attributes (see
+    _requested_attributes) are simply absent from the matched listing's
+    title — e.g. the user asked for "Silver Shadow" and the picked title
+    only says "Titanium Silver" (a real, different color, not the one
+    asked for). An empty result means either every attribute was
+    confirmed, or the user didn't name any specific attributes to begin
+    with (nothing to fail to match)."""
+    title_lower = (title or "").lower()
+    return [attr for attr in _requested_attributes(name) if attr.lower() not in title_lower]
 
 
 class OrderAmazonTool(Tool):
@@ -259,6 +308,26 @@ class OrderAmazonTool(Tool):
                     return (
                         f"Found a likely match for '{product_name}' but couldn't get its link — try "
                         "shop_amazon directly and order using the link from those results."
+                    )
+
+                # Never silently substitute a different variant for one the
+                # user specifically named — see _unmatched_attributes'
+                # docstring for the real, live-reproduced case this guards
+                # against (a wrong color picked purely on overall text
+                # similarity, with no disclosure). Stops here, before ever
+                # opening the product page or touching the cart.
+                unmatched = _unmatched_attributes(product_name, match.get("title", ""))
+                if unmatched:
+                    alternatives = "\n".join(
+                        f"- {r['title']}" + (f" — {r['price']}" if r.get("price") else "")
+                        for r in results[:5]
+                    )
+                    return (
+                        f"I couldn't find '{product_name}' with {', '.join(unmatched)} specifically — "
+                        f"none of the actual Amazon.in results match {'that' if len(unmatched) == 1 else 'those'} "
+                        f"exactly. Here's what's really available:\n{alternatives}\n"
+                        "Tell me which one you actually want (or give me the exact link) and I'll order that — "
+                        "I won't substitute a different variant without you confirming."
                     )
 
             context = browser.get_context()

@@ -3,15 +3,27 @@ Tests for the Anthropic/Gemini <-> internal-shape translations in
 agent/llm_client.py. These are pure data-transformation functions — no
 network calls, no live API key needed. The Ollama path isn't tested here
 since it's a near-direct passthrough to the ollama SDK.
+
+The Anthropic call-shape tests below (test_anthropic_chat_*) are a
+deliberate exception — they DO exercise _anthropic_chat/_anthropic_chat_
+streaming's actual call to the SDK, using unittest.mock.create_autospec
+against the real anthropic.resources.messages.Messages class rather than a
+bare MagicMock. This is the whole point of them: a bare MagicMock accepts
+any keyword argument silently and would never catch an SDK call-signature
+mismatch — which is exactly the class of bug that shipped and broke every
+single Anthropic request in production (see their docstrings).
 """
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, create_autospec, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from anthropic.resources.messages import Messages
 from google.genai import types as gtypes
 
+from agent import llm_client
 from agent.llm_client import (
     _anthropic_messages,
     _anthropic_tools,
@@ -275,3 +287,50 @@ def test_parse_gemini_response_handles_text_only():
     )
     result = _parse_gemini_response(fake_response)
     assert result == {"message": {"content": "Hi there.", "tool_calls": []}}
+
+
+def test_anthropic_chat_uses_a_call_signature_the_installed_sdk_actually_accepts():
+    """Regression test for a real, live-reproduced bug (QA audit,
+    2026-08-31): the installed anthropic SDK (1.0.0) dropped `temperature`
+    from Messages.create()'s typed signature entirely — every single
+    non-streaming Anthropic request crashed with "unexpected keyword
+    argument 'temperature'" before this was fixed to pass it via
+    extra_body instead. autospec'd against the real Messages class (not a
+    bare MagicMock, which accepts any kwarg silently and would never have
+    caught this) so a future SDK signature change fails this test
+    immediately instead of only failing in production."""
+    fake_messages = create_autospec(Messages, instance=True)
+    fake_response = MagicMock()
+    fake_response.content = []
+    fake_messages.create.return_value = fake_response
+    fake_client = MagicMock()
+    fake_client.messages = fake_messages
+
+    with patch.object(llm_client, "_get_anthropic_client", return_value=fake_client):
+        result = llm_client._anthropic_chat([{"role": "user", "content": "hi"}], [])
+
+    fake_messages.create.assert_called_once()
+    assert result == {"message": {"content": "", "tool_calls": []}}
+
+
+def test_anthropic_chat_streaming_uses_a_call_signature_the_installed_sdk_actually_accepts():
+    """Same regression as above, for the streaming path — Messages.stream()
+    dropped `temperature` from its typed signature too, in the same SDK
+    version, and this is the path server.py's /ws endpoint actually calls
+    (chat_streaming), so this is the one that broke live end-to-end
+    testing first."""
+    fake_messages = create_autospec(Messages, instance=True)
+    fake_stream_context = MagicMock()
+    fake_stream_context.text_stream = iter(["hello"])
+    fake_final = MagicMock()
+    fake_final.content = []
+    fake_stream_context.get_final_message.return_value = fake_final
+    fake_messages.stream.return_value.__enter__.return_value = fake_stream_context
+    fake_client = MagicMock()
+    fake_client.messages = fake_messages
+
+    with patch.object(llm_client, "_get_anthropic_client", return_value=fake_client):
+        chunks = list(llm_client._anthropic_chat_streaming([{"role": "user", "content": "hi"}], []))
+
+    fake_messages.stream.assert_called_once()
+    assert chunks[0]["message"]["content"] == "hello"

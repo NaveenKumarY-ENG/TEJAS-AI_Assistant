@@ -1,0 +1,48 @@
+# Quick start: `docker compose up --build`, then open http://localhost:8000
+#
+# Brings up the local LLM (Ollama) and the TEJAS backend together. You still
+# need to pull at least one model into the ollama service once:
+#   docker compose exec ollama ollama pull qwen2.5:7b
+# (or whatever model config.py's AVAILABLE_MODELS/.env point at).
+#
+# GPU acceleration (voice output, OCR) and the Amazon shopping tools are
+# deliberately NOT part of this default setup — see Dockerfile's header
+# comment for why. Everything else (chat, voice input, reminders + real
+# Google Calendar sync, the knowledge base/RAG) works out of the box.
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    restart: unless-stopped
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Reach the ollama service by its Compose service name, not localhost
+      # — see agent/llm_client.py, which uses the `ollama` SDK's own default
+      # client (no explicit host wiring in this codebase), so this is the
+      # SDK's own standard env var for that.
+      - OLLAMA_HOST=http://ollama:11434
+      # See server.py's _open_dashboard_once() — there's no browser to pop
+      # open inside a container, and no display for it to appear on.
+      - TEJAS_NO_AUTO_OPEN=1
+    env_file:
+      # Your existing .env (API keys, provider choice, etc.) — same file
+      # the non-Docker Setup instructions already have you create.
+      - .env
+    volumes:
+      # Persists sessions/reminders/facts (SQLite), the knowledge base +
+      # semantic memory (ChromaDB), and the sandbox directory across
+      # container restarts/rebuilds — see Dockerfile's comment.
+      - ./data:/app/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_models:

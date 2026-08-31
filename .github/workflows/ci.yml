@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # Installs the full requirements.txt as-is — no CUDA/GPU here, but
+      # nothing in the test suite needs one: agent/tts.py, memory/ocr.py,
+      # and integrations/browser.py all import their heavy dependencies
+      # (torch/kokoro/easyocr/playwright) lazily, inside functions, never
+      # at module scope — confirmed by reading them, not assumed — and
+      # every test that would otherwise need a real model/network call
+      # (ollama.chat, requests.get, Anthropic/Gemini clients) mocks it at
+      # the boundary instead. `playwright install chromium` is
+      # deliberately NOT run here — nothing in the suite launches a real
+      # browser, only the deferred import path (see integrations/browser.py)
+      # that these tests never reach.
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest tests/ -q
+
+  frontend:
+    name: Frontend build & lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check + build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test

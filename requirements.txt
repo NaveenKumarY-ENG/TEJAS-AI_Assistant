@@ -1,4 +1,4 @@
-anthropic>=0.40.0
+anthropic>=1.0.0,<2.0.0  # floor bumped + upper bound added after a real, live-confirmed break: the old unbounded >=0.40.0 let a fresh install pull in 1.0.0, whose Messages.create()/stream() dropped the `temperature` kwarg entirely (see agent/llm_client.py's fix, now via extra_body) — capped so a future major bump can't silently do the same again
 google-genai>=1.0.0
 ollama>=0.4.0
 chromadb>=0.5.0

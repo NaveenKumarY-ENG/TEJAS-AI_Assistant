@@ -110,6 +110,33 @@ def _is_reminder_query(text: str) -> bool:
     return bool(_REMINDER_QUERY_RE.search(text))
 
 
+# QA audit finding B-005: a clear "add X to cart" request could silently go
+# unfulfilled — the model called shop_amazon (search) alone, then narrated
+# unsolicited accessory recommendations instead of ever calling
+# order_amazon, with no cart action taken and no error surfaced. Confirmed
+# reproducible (not a sampling fluke) against qwen2.5:7b; a static system-
+# prompt rule alone did NOT fix it. Same root cause and same fix shape as
+# the reminder-listing bug above ("a 7B model sometimes skips calling the
+# right tool and improvises instead") — reinforcing the instruction right
+# next to the user's own message, every matching turn, rather than relying
+# on a rule buried in the (cached, rarely re-attended-to) static system
+# prompt.
+#
+# Deliberately scoped to "add/put ... to/in (my/the) cart" specifically —
+# not "order"/"buy" alone, which are too ambiguous (e.g. "order me a
+# pizza," "should I buy this stock") and risk the opposite failure: forcing
+# a real cart action the user never actually asked for. "add to cart" has
+# no such ambiguity — there's no ordinary meaning of that exact phrase
+# other than wanting the item added to a shopping cart.
+_CART_REQUEST_RE = re.compile(
+    r"\b(?:add|put)\b.{0,200}?\b(?:to|in)\s+(?:my\s+|the\s+)?(?:amazon(?:\.in)?\s+)?cart\b", re.IGNORECASE
+)
+
+
+def _is_cart_request_query(text: str) -> bool:
+    return bool(_CART_REQUEST_RE.search(text))
+
+
 class Agent:
     def __init__(self, session_id: int | None = None, resume: bool = False):
         """
@@ -214,6 +241,22 @@ class Agent:
                 "update, complete, or delete a reminder, you must still call manage_reminders "
                 "for it right now — this listing reflects the state BEFORE any action you take "
                 "this turn, so it will look unchanged until you actually call the tool."
+            )
+
+        if _is_cart_request_query(user_input):
+            # See _CART_REQUEST_RE's comment (B-005) — reinforced right next
+            # to the user's own message, every matching turn, the same fix
+            # shape already proven for the analogous reminder-tool-skipping
+            # bug above.
+            parts.append(
+                "This message looks like a request to add a specific product to the user's "
+                "Amazon cart. You MUST call order_amazon right now as your very next step, with "
+                "product_name set to the product they described (or product_url if they gave a "
+                "link) — do NOT call shop_amazon alone and then describe, recommend, or list "
+                "results instead; that is not what was asked, even if the search turns up "
+                "accessories or similar items alongside the actual product. If order_amazon "
+                "reports it couldn't confirm an exact match, relay that message to the user "
+                "plainly rather than substituting your own recommendation for it."
             )
 
         listing = knowledge.document_listing()
