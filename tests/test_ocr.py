@@ -67,3 +67,41 @@ def test_reader_uses_english_and_hindi():
         mock_reader_cls.assert_called_once_with(["en", "hi"], gpu=False)
     finally:
         ocr._reader = None
+
+
+def test_get_reader_respects_ocr_device_cpu_override_even_with_cuda_available():
+    """Regression test for a real, live-diagnosed problem: on a GPU too
+    small to hold both Ollama's LLM and EasyOCR/Kokoro's own CUDA
+    allocation at once, EasyOCR defaulting to GPU whenever CUDA is merely
+    *available* (regardless of whether it's actually a good idea) forced
+    Ollama to partially offload its model to CPU (confirmed via `ollama
+    ps`: an 18-30% CPU/GPU split) — every chat response paying for it, not
+    just OCR calls. OCR_DEVICE=cpu must override CUDA availability, not
+    just supplement it."""
+    ocr._reader = None
+    try:
+        with (
+            patch("torch.cuda.is_available", return_value=True),  # CUDA IS available...
+            patch("memory.ocr.config.ocr_device", "cpu"),  # ...but explicitly overridden to CPU
+            patch("easyocr.Reader") as mock_reader_cls,
+        ):
+            ocr._get_reader()
+        mock_reader_cls.assert_called_once_with(["en", "hi"], gpu=False)
+    finally:
+        ocr._reader = None
+
+
+def test_get_reader_uses_gpu_when_device_is_auto_and_cuda_is_available():
+    """The default ("auto") must not regress — this is still the right
+    choice on a GPU with enough headroom for everything at once."""
+    ocr._reader = None
+    try:
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("memory.ocr.config.ocr_device", "auto"),
+            patch("easyocr.Reader") as mock_reader_cls,
+        ):
+            ocr._get_reader()
+        mock_reader_cls.assert_called_once_with(["en", "hi"], gpu=True)
+    finally:
+        ocr._reader = None

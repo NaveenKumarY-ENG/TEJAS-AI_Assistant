@@ -42,7 +42,7 @@ def _get_pipeline():
                 import torch
                 from kokoro import KPipeline
 
-                device = "cuda" if torch.cuda.is_available() else "cpu"
+                device = "cpu" if config.tts_device == "cpu" else ("cuda" if torch.cuda.is_available() else "cpu")
                 logger.info(
                     "Loading Kokoro TTS pipeline on %s (first use only, may download weights)...",
                     device,

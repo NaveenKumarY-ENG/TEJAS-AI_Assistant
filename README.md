@@ -253,6 +253,7 @@ All settings live in `.env` (copy from `.env.example`). Key ones:
 | `TTS_PROVIDER` | `neural` | `neural` (Kokoro-82M, GPU via CUDA when available) or `browser` (disable server-side TTS, use the browser's built-in voice only). `neural` also auto-falls-back to the browser voice at runtime if torch/kokoro aren't installed |
 | `TTS_VOICE` | `am_michael` | Startup voice — switchable live in the UI between the 3 presets in `AVAILABLE_TTS_VOICES` (`config.py`): `am_michael`/`am_fenrir` (male), `af_heart` (female). Any other name from the [voice pack list](https://huggingface.co/hexgrad/Kokoro-82M) also works here, just won't appear as a clickable option |
 | `TTS_LANG_CODE` | `a` | Kokoro language/voice-pack prefix (`a` = American English); must match `TTS_VOICE`'s prefix |
+| `TTS_DEVICE` / `OCR_DEVICE` | `auto` | `auto` uses CUDA when available (default); set either to `cpu` to force it off. Worth setting on a smaller GPU (6-8GB) also running Ollama — see [Performance notes](#performance-notes) for why this can matter a lot |
 | `SEARCH_API_KEY` | — | Optional. Enables `web_search` (free key at [tavily.com](https://tavily.com)) |
 | `TEJAS_NO_AUTO_OPEN` | — | Set to `1` to stop `uvicorn server:app --reload` from auto-opening Chrome on startup (e.g. headless/CI environments) |
 
@@ -365,9 +366,11 @@ Two other things in this codebase help further:
 
 None of this changes the fundamental limit: the *first* processing of ~800 tokens of tool schema on a CPU-only 7B model will always take tens of seconds. If that's not acceptable, `LLM_PROVIDER=anthropic` or `LLM_PROVIDER=gemini` (the latter free, no billing required) don't hit this wall at all — cloud inference processes the same schema in a couple of seconds, every time.
 
-### GPU/VRAM sharing (Ollama + neural TTS)
+### GPU/VRAM sharing (Ollama + neural TTS/OCR)
 
-On a GPU-enabled machine, Ollama and Kokoro (neural TTS) share the same VRAM pool. A 7B-class Ollama model typically holds ~4GB; Kokoro-82M is small enough (well under 500MB) that it comfortably coexists on an 8GB card, and still fits on a 6GB card with a few GB to spare. If you're on a smaller GPU and see out-of-memory errors, set `TTS_PROVIDER=browser` to free that headroom for the LLM — voice output still works, just via the browser's voice instead of the neural one.
+On a GPU-enabled machine, Ollama and Kokoro (neural TTS)/EasyOCR share the same VRAM pool — and on a smaller card, this costs a lot more than an OOM crash. **Live-measured on an RTX 3060 (6GB VRAM):** with Kokoro/EasyOCR's own CUDA allocation also present, `qwen2.5:7b` (a Q4 quantized 7B model, ~4.7GB of weights alone) didn't fully fit — `ollama ps` showed an **18-30% CPU/GPU split** (worse for the larger `qwen3:8b`), meaning Ollama silently offloaded part of the model to CPU. That's not a one-time cost: it's paid on **every single chat response**, since CPU layers are dramatically slower than GPU ones — this is a common enough card size that it's worth checking for, not an edge case.
+
+Check it yourself with `ollama ps` right after a chat message — if `PROCESSOR` shows anything other than `100% GPU`, this is happening to you. Fix: set `TTS_DEVICE=cpu` and/or `OCR_DEVICE=cpu` in `.env` (see [Configuration](#configuration)) to free the GPU for Ollama alone — chat happens on every turn, TTS/OCR are occasional and small enough to run fine on CPU. This keeps full neural TTS/OCR quality, just off the GPU; if you'd rather drop neural TTS entirely instead, `TTS_PROVIDER=browser` is still the alternative (voice output via the browser's built-in voice). On an 8GB+ card there's generally enough headroom for everything at once and the `auto` default is fine.
 
 ## Security notes
 

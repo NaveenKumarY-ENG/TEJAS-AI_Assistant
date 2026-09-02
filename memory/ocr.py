@@ -12,6 +12,8 @@ import io
 import logging
 import threading
 
+from config import config
+
 logger = logging.getLogger("assistant.ocr")
 
 _reader = None
@@ -34,7 +36,7 @@ def _get_reader():
                 import torch
                 import easyocr
 
-                gpu = torch.cuda.is_available()
+                gpu = torch.cuda.is_available() and config.ocr_device != "cpu"
                 logger.info(
                     "Loading EasyOCR reader on %s (first use only, may download weights)...",
                     "cuda" if gpu else "cpu",

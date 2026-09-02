@@ -173,6 +173,24 @@ class Config:
     # match the prefix of tts_voice (e.g. "af_..."/"am_..." both use "a").
     tts_lang_code: str = field(default_factory=lambda: os.getenv("TTS_LANG_CODE", "a"))
 
+    # "auto" (default) uses CUDA for TTS/OCR whenever it's available, same
+    # as always. "cpu" forces CPU regardless — added after live-diagnosing
+    # a real, measurable problem on a shared 6GB GPU: Ollama's own LLM
+    # (~4.7GB of weights alone for a 7B Q4 model) plus Kokoro/EasyOCR's
+    # CUDA allocation together didn't fit in 6GB, so Ollama silently
+    # offloaded part of the model to CPU (confirmed via `ollama ps`: an
+    # 18-30% CPU/GPU split depending on model/context) — every single chat
+    # response paying for that split, not just TTS/OCR calls. TTS/OCR are
+    # comparatively small models (Kokoro-82M; EasyOCR's detector/
+    # recognizer) that run acceptably on CPU, and are only invoked
+    # occasionally (a reply's speech, an uploaded document) rather than on
+    # every conversation turn — freeing the GPU for Ollama alone is the
+    # better trade on a card too small to hold both comfortably. Leave as
+    # "auto" if your GPU has enough headroom for everything at once (8GB+
+    # generally does, for the model sizes this app ships with).
+    tts_device: str = field(default_factory=lambda: os.getenv("TTS_DEVICE", "auto").strip().lower())
+    ocr_device: str = field(default_factory=lambda: os.getenv("OCR_DEVICE", "auto").strip().lower())
+
     # --- Safety ---
     sandbox_dir: str = str(DATA_DIR / "sandbox")  # code exec / file ops confined here
 
