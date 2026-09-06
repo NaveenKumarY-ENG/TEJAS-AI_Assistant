@@ -108,10 +108,23 @@ export function useSpeechRecognition(
       if (mediaRecorderRef.current?.state === "recording") mediaRecorderRef.current.stop();
       releaseStream();
       teardownAudio();
-      if (errorTimeoutRef.current) window.clearTimeout(errorTimeoutRef.current);
+      if (errorTimeoutRef.current) {
+        window.clearTimeout(errorTimeoutRef.current);
+        // Confirmed live: exiting Voice Mode while enterError's own
+        // ERROR_DISPLAY_MS clear-back-to-idle timer was still pending
+        // cancelled that timer here without ever running its actual job —
+        // coreState stayed stuck on "error" (a permanent "⚠ ERROR" HUD
+        // indicator) with nothing left to clear it, surviving all the way
+        // back to the Home screen until some unrelated later turn happened
+        // to overwrite coreState itself. Do the clear now instead of just
+        // cancelling it silently — guarded so this can't stomp a
+        // legitimate later state if something else already moved
+        // coreState on by the time this runs.
+        if (useAssistantStore.getState().coreState === "error") setCoreState("idle");
+      }
       if (revealTimeoutRef.current) window.clearTimeout(revealTimeoutRef.current);
     };
-  }, [releaseStream, teardownAudio]);
+  }, [releaseStream, teardownAudio, setCoreState]);
 
   const start = useCallback(async () => {
     if (!supported) {

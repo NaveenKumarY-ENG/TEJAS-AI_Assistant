@@ -7,6 +7,7 @@ by hand in that same browser window — shows up here.
 """
 import logging
 import re
+import time
 import urllib.parse
 
 from integrations import browser
@@ -172,11 +173,29 @@ def _click_delete_and_confirm(page, card, asin: str) -> bool:
     # intermittently raised (a mid-transition execution context) even
     # though the removal had already genuinely succeeded both times — a
     # clean re-load guarantees a settled document before checking.
-    try:
-        page.goto("https://www.amazon.in/gp/cart/view.html", wait_until="domcontentloaded")
-        return page.query_selector(f"div.sc-list-item[data-asin='{asin}']") is None
-    except Exception:
-        return False
+    #
+    # Up to 2 attempts with a short backoff, rather than giving up after a
+    # single check: confirmed live a third time — the fresh-navigation
+    # re-query above still occasionally reported "couldn't confirm" on a
+    # removal that, checked moments later, had already genuinely
+    # succeeded. Two distinct causes can produce that, and this retries
+    # both: an exception from the goto/query itself (the cart page not
+    # fully settled yet), or a clean query that still finds the item —
+    # Amazon's own delete is an async server-side operation, so even a
+    # freshly-loaded cart page can occasionally still reflect the
+    # pre-delete state for a moment. A brief pause before one more clean
+    # attempt catches either case instead of surfacing an honest-but-wrong
+    # "failed" for a removal that actually worked.
+    for attempt in range(2):
+        try:
+            page.goto("https://www.amazon.in/gp/cart/view.html", wait_until="domcontentloaded")
+            if page.query_selector(f"div.sc-list-item[data-asin='{asin}']") is None:
+                return True
+        except Exception:
+            pass
+        if attempt == 0:
+            time.sleep(1.5)
+    return False
 
 
 class ViewCartTool(Tool):

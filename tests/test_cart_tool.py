@@ -91,7 +91,13 @@ class FakePage:
         self._account_el = FakeElement("Hello, Naveen" if logged_in else "Hello, sign in")
         self._body_text = body_text
         self._has_saved_container = has_saved_container
+        # Either a plain bool (every confirmation check behaves the same),
+        # or a list of bools consumed one per ASIN re-query — lets a test
+        # simulate _click_delete_and_confirm's retry actually mattering:
+        # [False, True] means "still shows as present on the first
+        # re-check, genuinely gone by the second."
         self._delete_confirms = delete_confirms
+        self._asin_query_count = 0
         self.urls_visited = []
 
     def goto(self, url, wait_until=None):
@@ -109,7 +115,13 @@ class FakePage:
             # Mirrors the real post-navigation re-query in
             # _click_delete_and_confirm: the item is genuinely gone (None)
             # unless the fixture says the click never actually removed it.
-            return None if self._delete_confirms else FakeElement()
+            if isinstance(self._delete_confirms, list):
+                i = min(self._asin_query_count, len(self._delete_confirms) - 1)
+                self._asin_query_count += 1
+                confirmed = self._delete_confirms[i]
+            else:
+                confirmed = self._delete_confirms
+            return None if confirmed else FakeElement()
         return None
 
     def query_selector_all(self, selector: str):
@@ -303,8 +315,27 @@ def test_click_delete_and_confirm_returns_false_when_removal_never_confirmed():
     trust that a click didn't raise" principle as order_tool.py's
     _add_to_cart. A wrong/stale delete selector fails safely this way."""
     item = make_item(asin="B000TEST")
-    assert cart_tool._click_delete_and_confirm(FakePage(delete_confirms=False), item, "B000TEST") is False
+    with patch("tools.cart_tool.time.sleep"):  # skip the real retry backoff — this always fails, both attempts
+        result = cart_tool._click_delete_and_confirm(FakePage(delete_confirms=False), item, "B000TEST")
+    assert result is False
     assert item._elements["input[value='Delete']"].clicked is True  # the click itself did happen
+
+
+def test_click_delete_and_confirm_retries_once_before_giving_up():
+    """Regression test for a real, live-reproduced bug found a third time:
+    even the fresh-navigation re-query could still occasionally report
+    "couldn't confirm" on a removal that had, checked moments later,
+    already genuinely succeeded — Amazon's own delete is an async
+    server-side operation, so a freshly-loaded cart page can briefly still
+    reflect the pre-delete state. One retry after a short backoff must
+    catch that and still report success, rather than surfacing an
+    honest-but-wrong "failed" for a removal that actually worked."""
+    item = make_item(asin="B000TEST")
+    page = FakePage(delete_confirms=[False, True])  # still shows present once, then genuinely gone
+    with patch("tools.cart_tool.time.sleep") as mock_sleep:
+        result = cart_tool._click_delete_and_confirm(page, item, "B000TEST")
+    assert result is True
+    mock_sleep.assert_called_once()
 
 
 def test_run_remove_returns_setup_message_when_browser_unavailable():

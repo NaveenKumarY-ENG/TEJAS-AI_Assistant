@@ -37,9 +37,22 @@ class CodeExecutionTool(Tool):
     def run(self, code: str) -> str:
         script_path = None
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".py", dir=config.sandbox_dir, delete=False
-            ) as f:
+            # Deliberately NOT dir=config.sandbox_dir: the default `dev`
+            # workflow runs `uvicorn server:app --reload` (see README), and
+            # that sandbox directory sits inside the project root --reload
+            # watches for .py changes. Every execute_python call used to
+            # write its throwaway script there, which uvicorn's watcher
+            # picked up as a real code change and reloaded the whole
+            # server mid-response -- confirmed live: the WebSocket closed
+            # with code 1012 ("service restart") on literally every call
+            # that reached this tool, and since the process was torn down
+            # before this function's own `finally` cleanup could run, the
+            # temp script was left behind every time too (a live sweep
+            # found 34 leaked tmp*.py files in the sandbox from this alone).
+            # The system's default temp directory is outside any watched
+            # tree, so the script itself lives there; the executed code's
+            # *own* cwd (below) is still the real sandbox, unchanged.
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
                 f.write(code)
                 script_path = f.name
 
