@@ -76,6 +76,37 @@ def _fake_agent(**_kwargs):
     return fake
 
 
+def test_api_meta_reports_live_ai_status():
+    """/api/meta is the one place the frontend learns whether Live.AI's
+    tools are actually usable (see App.tsx's setLiveAiEnabled/
+    setBrowserAvailable/setSearchConfigured) — same pattern as the
+    pre-existing tts_available/ocr_available fields, just for the new
+    open_website/read_webpage/shop_flipkart tools."""
+    with patch.object(server.config, "live_ai_enabled", True), patch.object(
+        server.browser, "available", return_value=True
+    ), patch.object(server.config, "search_api_key", "tvly-realkey123"):
+        client = TestClient(server.app)  # no `with` block: skips lifespan/startup hooks entirely
+        response = client.get("/api/meta")
+    body = response.json()
+    assert body["live_ai_enabled"] is True
+    assert body["browser_available"] is True
+    assert body["search_configured"] is True
+    assert any(t["name"] == "open_website" for t in body["tools"])
+    assert any(t["name"] == "shop_flipkart" for t in body["tools"])
+
+
+def test_api_meta_reports_live_ai_disabled_and_unconfigured():
+    with patch.object(server.config, "live_ai_enabled", False), patch.object(
+        server.browser, "available", return_value=False
+    ), patch.object(server.config, "search_api_key", ""):
+        client = TestClient(server.app)
+        response = client.get("/api/meta")
+    body = response.json()
+    assert body["live_ai_enabled"] is False
+    assert body["browser_available"] is False
+    assert body["search_configured"] is False
+
+
 def test_ws_survives_a_malformed_frame_without_dropping_the_connection():
     """Regression test for a real risk found during review: an unguarded
     json.loads()/payload.get() on an incoming WS frame meant a single

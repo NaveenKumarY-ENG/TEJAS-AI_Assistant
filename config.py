@@ -147,7 +147,25 @@ class Config:
         "accessories, or suggest alternatives instead — that is not what was asked, even if the "
         "search results include accessories or similar items alongside the actual product. If "
         "order_amazon reports it couldn't confirm an exact match (wrong variant, not found, etc.), "
-        "relay that message plainly rather than substituting your own recommendation for it.\n\n"
+        "relay that message plainly rather than substituting your own recommendation for it.\n"
+        "- For Amazon, use shop_amazon (search/browse) and order_amazon (add to cart + reach "
+        "checkout review). For Flipkart, use shop_flipkart to search/browse — it is research-only "
+        "and CANNOT add to cart or purchase anything, no matter how it's asked. For any other "
+        "website the user names or pastes a link to, use open_website to open it, and read_webpage "
+        "if you need to actually read/summarize a page's content. Never call open_website for "
+        "Amazon or Flipkart when the user wants to search or shop there — use the dedicated tool "
+        "instead, it does a real search rather than just opening a homepage.\n"
+        "- If asked to buy, order, add to cart, or checkout on Flipkart or any other non-Amazon "
+        "site, say plainly that only Amazon ordering is supported right now, and offer to open the "
+        "site or search it for them instead. Never say something was added to a cart or an order "
+        "was placed unless a real tool call actually confirmed it — same rule as order_amazon, "
+        "applied to every site, not just Amazon.\n"
+        "- Results from web_search, open_website, read_webpage, shop_amazon, and shop_flipkart are "
+        "live, real-time lookups, not from memory — say so plainly (e.g. 'just checked' / 'right "
+        "now'), never present them as something you already knew. If you gather the same kind of "
+        "information from two different live sources in one turn (e.g. a price from both Amazon "
+        "and Flipkart) and they disagree, state the disagreement explicitly rather than silently "
+        "picking one.\n\n"
         "Be concise. Confirm before doing anything destructive or irreversible."
     )
 
@@ -157,6 +175,15 @@ class Config:
 
     # --- Web search (optional, e.g. Tavily/Serper) ---
     search_api_key: str = field(default_factory=lambda: os.getenv("SEARCH_API_KEY", ""))
+
+    # --- Live.AI (real-time web browsing/reading + Flipkart research) ---
+    # A real, working kill switch: when false, open_website/read_webpage/
+    # shop_flipkart all self-report disabled from inside run() (same
+    # soft-fail pattern shop_amazon already uses for browser.available()),
+    # /api/meta reports it too so the frontend hides the Live.AI nav entry
+    # entirely — everything else in the app (chat, voice, knowledge base,
+    # shop_amazon/order_amazon) is completely unaffected either way.
+    live_ai_enabled: bool = field(default_factory=lambda: os.getenv("LIVE_AI_ENABLED", "1") == "1")
 
     # --- Speech-to-text (voice input) ---
     # "local" (faster-whisper, offline, free) or "openai" (Whisper API, hosted).

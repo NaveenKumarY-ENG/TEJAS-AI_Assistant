@@ -33,8 +33,10 @@ from pydantic import BaseModel
 
 from agent import Agent, transcription, tts
 from config import AVAILABLE_MODELS, AVAILABLE_TTS_VOICES, config
+from integrations import browser
 from memory import folder_watch, knowledge, ocr, structured
 from tools import ALL_TOOLS
+from tools.web_search import _looks_unconfigured
 
 logging.basicConfig(
     level=logging.INFO,
@@ -225,12 +227,25 @@ async def meta():
     # chat with it), matching the same pattern /api/tts already uses.
     tts_available = await asyncio.to_thread(tts.available)
     ocr_available = await asyncio.to_thread(ocr.available)
+    # browser.available() launches a lightweight driver-process check only
+    # (no browser window) but still does real I/O (resolves Chromium's
+    # executable path on disk) — same asyncio.to_thread treatment as the
+    # tts/ocr checks above, for the same reason: keep the event loop (and
+    # the active /ws chat with it) unblocked.
+    browser_available = await asyncio.to_thread(browser.available)
     return {
         "assistant_name": config.assistant_name,
         "model": config.active_model,
         "tools": [{"name": t.name, "description": t.description} for t in ALL_TOOLS],
         "tts_available": tts_available,
         "ocr_available": ocr_available,
+        # Live.AI status — read by frontend/src/components/liveai/LiveAiPanel.tsx
+        # and Sidebar.tsx (to hide the nav entry entirely when disabled),
+        # same "expose a real backend capability check to the frontend"
+        # pattern tts_available/ocr_available already establish.
+        "live_ai_enabled": config.live_ai_enabled,
+        "browser_available": browser_available,
+        "search_configured": not _looks_unconfigured(config.search_api_key),
     }
 
 

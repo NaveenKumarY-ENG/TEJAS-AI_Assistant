@@ -15,6 +15,7 @@ import re
 import requests
 
 from config import config
+from integrations.html_extract import extract_readable_text as _extract_text_from_html
 from memory import extraction, ocr, structured
 from memory.vector import get_client
 
@@ -106,22 +107,6 @@ def _extract_pages(filename: str, data: bytes) -> list[tuple[int | None, str]]:
     if ext == "pdf":
         return [(i + 1, text) for i, text in enumerate(_extract_pdf_pages(data))]
     return [(None, _extract_text(filename, data))]
-
-
-def _extract_text_from_html(html: str) -> str:
-    """Strip script/style/nav/boilerplate and return the visible text.
-    Deliberately BeautifulSoup + a tag-removal heuristic rather than
-    trafilatura or similar — matches this codebase's existing preference
-    for small custom logic over heavier libraries (e.g. _chunk_text below,
-    frontend/src/utils/text.ts's hand-rolled sentence splitter) for
-    something this straightforward."""
-    from bs4 import BeautifulSoup
-
-    soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]):
-        tag.decompose()
-    lines = (line.strip() for line in soup.get_text(separator="\n").splitlines())
-    return "\n".join(line for line in lines if line)
 
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
