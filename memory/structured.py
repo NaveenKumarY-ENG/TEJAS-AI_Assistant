@@ -131,6 +131,38 @@ def init_db() -> None:
             conn.execute("ALTER TABLE documents ADD COLUMN structured_data TEXT NOT NULL DEFAULT '{}'")
         if "doc_type" not in existing_columns:
             conn.execute("ALTER TABLE documents ADD COLUMN doc_type TEXT NOT NULL DEFAULT ''")
+        # Added for reprocessing + duplicate detection: previously only the
+        # post-chunking text ever existed (briefly, in memory) — a document's
+        # full extracted text was never actually persisted anywhere. That
+        # meant improving chunking or extraction later (exactly what happened
+        # this session) could never be applied to an already-ingested
+        # document without the user re-uploading the original file by hand.
+        # raw_text is the same text _chunk_text splits — keeping it lets
+        # reprocess_document() re-run structured extraction (and, in the
+        # future, re-chunk) from stored data alone. content_hash (sha256 of
+        # raw_text) is what duplicate-upload detection checks against.
+        # Empty string for both on any row that predates this migration —
+        # callers must treat "" as "nothing stored," not a real value.
+        if "raw_text" not in existing_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN raw_text TEXT NOT NULL DEFAULT ''")
+        if "content_hash" not in existing_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''")
+        # Original file bytes, kept separately from `documents` (a BLOB in
+        # the main row would bloat every plain SELECT * against a table
+        # that's otherwise cheap small text/JSON columns). One-to-one with
+        # documents; only ever populated for a real file upload (URLs have
+        # no "original file", and a note's raw_text already *is* the whole
+        # original). Unblocks "download the original" / a real preview —
+        # previously the original bytes were discarded right after
+        # extraction, so there was no way to get them back once ingested.
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS document_files (
+                document_id INTEGER PRIMARY KEY,
+                content_type TEXT NOT NULL,
+                data BLOB NOT NULL,
+                FOREIGN KEY (document_id) REFERENCES documents(id)
+            )"""
+        )
         conn.execute(
             """CREATE TABLE IF NOT EXISTS watched_folders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,6 +170,16 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             )"""
         )
+        # Added for per-folder filtering — without this, watching a broad
+        # folder (a whole Documents drive) recursively pulls in every file
+        # matching a supported extension with no way to narrow it down.
+        # Empty string means "no filter" (matches everything, the previous
+        # behavior) for both, so existing watched folders are unaffected.
+        folder_columns = {row["name"] for row in conn.execute("PRAGMA table_info(watched_folders)")}
+        if "include_pattern" not in folder_columns:
+            conn.execute("ALTER TABLE watched_folders ADD COLUMN include_pattern TEXT NOT NULL DEFAULT ''")
+        if "exclude_pattern" not in folder_columns:
+            conn.execute("ALTER TABLE watched_folders ADD COLUMN exclude_pattern TEXT NOT NULL DEFAULT ''")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS watched_files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -378,11 +420,14 @@ def add_document(
     source_type: str = "manual",
     structured_data: dict | None = None,
     doc_type: str = "",
+    raw_text: str = "",
+    content_hash: str = "",
 ) -> int:
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO documents (filename, chunk_count, tags, source_type, structured_data, doc_type, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO documents "
+            "(filename, chunk_count, tags, source_type, structured_data, doc_type, raw_text, content_hash, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 filename,
                 chunk_count,
@@ -390,6 +435,8 @@ def add_document(
                 source_type,
                 json.dumps(structured_data or {}),
                 doc_type,
+                raw_text,
+                content_hash,
                 datetime.utcnow().isoformat(),
             ),
         )
@@ -399,20 +446,54 @@ def add_document(
 def _decode_document(doc: dict) -> dict:
     doc["tags"] = json.loads(doc["tags"])
     doc["structured_data"] = json.loads(doc["structured_data"])
+    if "has_file" in doc:
+        doc["has_file"] = bool(doc["has_file"])  # SQLite EXISTS() comes back as 0/1, not a real bool
     return doc
 
 
 def list_documents() -> list[dict]:
+    """Deliberately excludes raw_text/content_hash — the frontend's document
+    list only ever needs filename/chunk_count/tags/etc, and a document's
+    full extracted text can be tens of KB; sending it on every page load
+    and every 5-second watched-folder poll would be pure waste. Use
+    get_document() (single row) when the actual text is needed, e.g.
+    knowledge.reprocess_document(). has_file is a cheap EXISTS check (not
+    the file bytes themselves) — the UI's "download original" action only
+    shows up for documents that actually have one stored (real uploads;
+    never notes or URLs)."""
     with _connect() as conn:
-        rows = conn.execute("SELECT * FROM documents ORDER BY id DESC").fetchall()
+        rows = conn.execute(
+            "SELECT d.id, d.filename, d.chunk_count, d.tags, d.source_type, d.structured_data, d.doc_type, "
+            "d.created_at, EXISTS(SELECT 1 FROM document_files f WHERE f.document_id = d.id) AS has_file "
+            "FROM documents d ORDER BY d.id DESC"
+        ).fetchall()
         documents = [dict(r) for r in rows]
     return [_decode_document(d) for d in documents]
+
+
+def find_document_by_hash(content_hash: str) -> dict | None:
+    """The one non-blocking signal duplicate-upload detection relies on —
+    see memory/knowledge.py's _index_text. Empty-string hashes (documents
+    ingested before this column existed) never match each other, since an
+    empty hash isn't a real fingerprint of anything."""
+    if not content_hash:
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM documents WHERE content_hash = ? AND content_hash != '' ORDER BY id ASC LIMIT 1",
+            (content_hash,),
+        ).fetchone()
+        return _decode_document(dict(row)) if row else None
 
 
 def get_document(document_id: int) -> dict | None:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
-        return _decode_document(dict(row)) if row else None
+        if row is None:
+            return None
+        doc = _decode_document(dict(row))
+        doc["has_file"] = get_document_file(document_id) is not None
+        return doc
 
 
 def update_document_structured_data(document_id: int, structured_data: dict, doc_type: str) -> bool:
@@ -436,10 +517,56 @@ def update_document_tags(document_id: int, tags: list[str]) -> bool:
         return cur.rowcount > 0
 
 
+def update_document_content(
+    document_id: int,
+    filename: str,
+    chunk_count: int,
+    raw_text: str,
+    content_hash: str,
+    structured_data: dict,
+    doc_type: str,
+) -> bool:
+    """Replace a document's content in place (title/text/chunk_count/
+    extracted fields) while keeping its id and tags — used by
+    knowledge.update_note() so editing a note doesn't orphan its id (chat
+    citations, tag filters, etc. all key off it) or force a delete+recreate
+    that loses its position in the list."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE documents SET filename = ?, chunk_count = ?, raw_text = ?, content_hash = ?, "
+            "structured_data = ?, doc_type = ? WHERE id = ?",
+            (filename, chunk_count, raw_text, content_hash, json.dumps(structured_data), doc_type, document_id),
+        )
+        return cur.rowcount > 0
+
+
 def delete_document(document_id: int) -> bool:
     with _connect() as conn:
+        conn.execute("DELETE FROM document_files WHERE document_id = ?", (document_id,))
         cur = conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
         return cur.rowcount > 0
+
+
+# ----------------------------------------------------------------------
+# Original file bytes (Knowledge Base) — see document_files' comment in
+# init_db for why this lives in its own table.
+# ----------------------------------------------------------------------
+
+def save_document_file(document_id: int, content_type: str, data: bytes) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO document_files (document_id, content_type, data) VALUES (?, ?, ?) "
+            "ON CONFLICT(document_id) DO UPDATE SET content_type = excluded.content_type, data = excluded.data",
+            (document_id, content_type, data),
+        )
+
+
+def get_document_file(document_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT content_type, data FROM document_files WHERE document_id = ?", (document_id,)
+        ).fetchone()
+        return dict(row) if row else None
 
 
 # ----------------------------------------------------------------------
@@ -451,11 +578,11 @@ def delete_document(document_id: int) -> bool:
 # from "deleted file" (in the table, no longer on disk) without re-reading
 # every file's content just to check.
 
-def add_watched_folder(path: str) -> int:
+def add_watched_folder(path: str, include_pattern: str = "", exclude_pattern: str = "") -> int:
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO watched_folders (path, created_at) VALUES (?, ?)",
-            (path, datetime.utcnow().isoformat()),
+            "INSERT INTO watched_folders (path, include_pattern, exclude_pattern, created_at) VALUES (?, ?, ?, ?)",
+            (path, include_pattern, exclude_pattern, datetime.utcnow().isoformat()),
         )
         return cur.lastrowid
 

@@ -9,6 +9,7 @@ folder-sourced document goes through the exact same
 extract/chunk/embed pipeline (OCR included) as a manual upload, just
 triggered by a file appearing on disk instead of a browser upload.
 """
+import fnmatch
 import logging
 import threading
 from pathlib import Path
@@ -21,6 +22,27 @@ from memory import knowledge, structured
 logger = logging.getLogger("assistant.folder_watch")
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".png", ".jpg", ".jpeg"}
+
+
+def _matches_patterns(relative_path: str, include_pattern: str, exclude_pattern: str) -> bool:
+    """Comma-separated glob patterns (fnmatch, e.g. "*.pdf, reports/*")
+    checked against the file's path relative to the watched folder's root
+    — not just its bare filename, so a pattern can target a subdirectory
+    ("archive/*") too. Empty include_pattern means "no filter" (matches
+    everything, the original behavior); empty exclude_pattern means
+    "exclude nothing". Without this, watching a broad folder recursively
+    pulled in every file matching a supported extension with no way to
+    narrow it down."""
+    normalized = relative_path.replace("\\", "/")
+    if include_pattern:
+        patterns = [p.strip() for p in include_pattern.split(",") if p.strip()]
+        if patterns and not any(fnmatch.fnmatch(normalized, p) for p in patterns):
+            return False
+    if exclude_pattern:
+        patterns = [p.strip() for p in exclude_pattern.split(",") if p.strip()]
+        if any(fnmatch.fnmatch(normalized, p) for p in patterns):
+            return False
+    return True
 
 # How long to wait after the last filesystem event for a given path before
 # actually ingesting it — editors/OS copy operations often fire several
@@ -59,12 +81,16 @@ def _remove_path(filepath: Path) -> None:
         knowledge.delete_document(row["document_id"])
 
 
-def _scan_folder(folder_id: int, path: Path) -> None:
+def _scan_folder(folder_id: int, path: Path, include_pattern: str = "", exclude_pattern: str = "") -> None:
     """Reconcile a folder's real contents against what's tracked in SQLite —
     used for both the initial scan when a folder is first watched and the
     startup reconciliation for folders that already existed."""
     on_disk = {
-        p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
+        p
+        for p in path.rglob("*")
+        if p.is_file()
+        and p.suffix.lower() in SUPPORTED_EXTENSIONS
+        and _matches_patterns(str(p.relative_to(path)), include_pattern, exclude_pattern)
     }
     tracked = {Path(f["filepath"]): f for f in structured.list_watched_files(folder_id)}
 
@@ -81,8 +107,11 @@ def _scan_folder(folder_id: int, path: Path) -> None:
 
 
 class _Handler(FileSystemEventHandler):
-    def __init__(self, folder_id: int):
+    def __init__(self, folder_id: int, root: Path, include_pattern: str = "", exclude_pattern: str = ""):
         self.folder_id = folder_id
+        self.root = root
+        self.include_pattern = include_pattern
+        self.exclude_pattern = exclude_pattern
 
     def _debounced(self, filepath: Path, action) -> None:
         key = str(filepath)
@@ -96,7 +125,14 @@ class _Handler(FileSystemEventHandler):
             timer.start()
 
     def _is_supported(self, path: str) -> bool:
-        return Path(path).suffix.lower() in SUPPORTED_EXTENSIONS
+        p = Path(path)
+        if p.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            return False
+        try:
+            relative = str(p.relative_to(self.root))
+        except ValueError:
+            relative = p.name  # shouldn't happen (watchdog only fires events under the watched root)
+        return _matches_patterns(relative, self.include_pattern, self.exclude_pattern)
 
     def on_created(self, event):
         if event.is_directory or not self._is_supported(event.src_path):
@@ -125,15 +161,15 @@ class _Handler(FileSystemEventHandler):
             self._debounced(dest, lambda: _ingest_path(self.folder_id, dest))
 
 
-def _start_observer(folder_id: int, path: Path) -> None:
+def _start_observer(folder_id: int, path: Path, include_pattern: str = "", exclude_pattern: str = "") -> None:
     observer = Observer()
     observer.daemon = True
-    observer.schedule(_Handler(folder_id), str(path), recursive=True)
+    observer.schedule(_Handler(folder_id, path, include_pattern, exclude_pattern), str(path), recursive=True)
     observer.start()
     _observers[folder_id] = observer
 
 
-def add_folder(path: str) -> dict:
+def add_folder(path: str, include_pattern: str = "", exclude_pattern: str = "") -> dict:
     resolved = Path(path).expanduser().resolve()
     if not resolved.is_dir():
         raise ValueError(f"Not a folder on this machine: {path}")
@@ -142,10 +178,12 @@ def add_folder(path: str) -> dict:
     if existing:
         raise ValueError(f"Already watching {resolved}")
 
-    folder_id = structured.add_watched_folder(str(resolved))
-    threading.Thread(target=_scan_folder, args=(folder_id, resolved), daemon=True).start()
-    _start_observer(folder_id, resolved)
-    return {"id": folder_id, "path": str(resolved)}
+    folder_id = structured.add_watched_folder(str(resolved), include_pattern, exclude_pattern)
+    threading.Thread(
+        target=_scan_folder, args=(folder_id, resolved, include_pattern, exclude_pattern), daemon=True
+    ).start()
+    _start_observer(folder_id, resolved, include_pattern, exclude_pattern)
+    return {"id": folder_id, "path": str(resolved), "include_pattern": include_pattern, "exclude_pattern": exclude_pattern}
 
 
 def remove_folder(folder_id: int) -> bool:
@@ -189,5 +227,7 @@ def start_all() -> None:
         if not path.is_dir():
             logger.warning("Watched folder no longer exists, skipping: %s", path)
             continue
-        _scan_folder(folder["id"], path)
-        _start_observer(folder["id"], path)
+        include_pattern = folder.get("include_pattern", "")
+        exclude_pattern = folder.get("exclude_pattern", "")
+        _scan_folder(folder["id"], path, include_pattern, exclude_pattern)
+        _start_observer(folder["id"], path, include_pattern, exclude_pattern)

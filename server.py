@@ -300,6 +300,54 @@ async def list_documents():
     return {"documents": structured.list_documents()}
 
 
+@app.get("/api/knowledge/{document_id}/file")
+async def download_original_file(document_id: int):
+    """The original uploaded bytes — see memory/knowledge.py's
+    get_original_file. 404 for a document with none stored (notes/URLs, or
+    anything uploaded before this existed)."""
+    original = await asyncio.to_thread(knowledge.get_original_file, document_id)
+    if original is None:
+        raise HTTPException(status_code=404, detail="No original file stored for this document")
+    return Response(
+        content=original["data"],
+        media_type=original["content_type"],
+        headers={"Content-Disposition": f'attachment; filename="{original["filename"]}"'},
+    )
+
+
+@app.post("/api/knowledge/{document_id}/summarize")
+async def summarize_document(document_id: int):
+    """One-pass local-LLM summary of a document's stored text — see
+    memory/knowledge.py's summarize_document."""
+    try:
+        result = await asyncio.to_thread(knowledge.summarize_document, document_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return result
+
+
+class NoteUpdateRequest(BaseModel):
+    title: str
+    text: str
+    tags: list[str] | None = None
+
+
+@app.patch("/api/knowledge/{document_id}/note")
+async def update_note(document_id: int, payload: NoteUpdateRequest):
+    """Replace a note's title/text in place — see memory/knowledge.py's
+    update_note. Previously editing a note meant delete + recreate, losing
+    its id (and position in the list)."""
+    try:
+        updated = await asyncio.to_thread(knowledge.update_note, document_id, payload.title, payload.text, payload.tags)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return updated
+
+
 def _parse_tags(raw: str) -> list[str]:
     """Comma-separated form field -> a clean list, e.g. 'work, q3 ' -> ['work', 'q3']."""
     return [t.strip() for t in raw.split(",") if t.strip()]
@@ -318,11 +366,25 @@ async def upload_document(file: UploadFile = File(...), tags: str = Form("")):
         doc = await asyncio.to_thread(
             knowledge.ingest_document, file.filename or "untitled", data, _parse_tags(tags)
         )
-    except (knowledge.UnsupportedFileType, knowledge.OCRUnavailable, ValueError) as e:
+    except (knowledge.UnsupportedFileType, knowledge.OCRUnavailable, knowledge.FileTooLarge, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         logger.exception("Document ingestion failed")
         raise HTTPException(status_code=500, detail="Failed to process document")
+    return doc
+
+
+@app.post("/api/knowledge/{document_id}/reprocess")
+async def reprocess_document(document_id: int):
+    """Re-run structured field extraction against a document's stored text —
+    see memory/knowledge.py's reprocess_document. Doesn't touch chunks/
+    embeddings, just the extracted-fields table shown in the UI."""
+    try:
+        doc = await asyncio.to_thread(knowledge.reprocess_document, document_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
     return doc
 
 
@@ -416,6 +478,12 @@ async def list_watched_folders():
 
 class FolderWatchRequest(BaseModel):
     path: str
+    # Comma-separated glob patterns matched against each file's path
+    # relative to this folder (e.g. "*.pdf,*.docx" / "archive/*") — see
+    # memory/folder_watch.py's _matches_patterns. Empty means "no filter",
+    # the original behavior.
+    include_pattern: str = ""
+    exclude_pattern: str = ""
 
 
 @app.post("/api/knowledge/folders")
@@ -425,7 +493,9 @@ async def watch_folder(payload: FolderWatchRequest):
     the folder is registered; ingested files show up in the document list a
     little after."""
     try:
-        folder = await asyncio.to_thread(folder_watch.add_folder, payload.path)
+        folder = await asyncio.to_thread(
+            folder_watch.add_folder, payload.path, payload.include_pattern, payload.exclude_pattern
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return folder
@@ -438,6 +508,23 @@ async def unwatch_folder(folder_id: int):
     if not removed:
         raise HTTPException(status_code=404, detail="Watched folder not found")
     return {"deleted": folder_id}
+
+
+@app.get("/api/knowledge/{document_id}")
+async def get_document(document_id: int):
+    """Single-document detail, including raw_text — deliberately separate
+    from the bulk list above (which excludes raw_text; see
+    structured.list_documents' docstring) so a document's full extracted
+    text is only ever sent when something actually asks for it, e.g. the
+    Knowledge Base UI's preview panel. Registered LAST among this prefix's
+    GET routes on purpose: FastAPI matches routes in registration order, and
+    this bare {document_id} pattern would otherwise swallow /api/knowledge/
+    search and /api/knowledge/folders (both valid non-integer path segments
+    it would try, and fail, to parse as an int)."""
+    doc = await asyncio.to_thread(structured.get_document, document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
 
 
 @app.post("/api/transcribe")

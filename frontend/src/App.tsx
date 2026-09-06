@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { BookOpen } from "lucide-react";
 import { Sidebar } from "./components/layout/Sidebar";
 import { TopBar } from "./components/layout/TopBar";
 import { AssistantCore } from "./components/core/AssistantCore";
@@ -125,6 +126,7 @@ function Dashboard() {
           voiceModeActive={voiceModeActive}
           onEnterKnowledge={() => setKnowledgePanelActive(true)}
           knowledgePanelActive={knowledgePanelActive}
+          onGoHome={() => setKnowledgePanelActive(false)}
           onQuickAction={sendMessage}
           quickActionsDisabled={busy}
         />
@@ -135,43 +137,56 @@ function Dashboard() {
             voiceOutputEnabled={voiceOutputEnabled}
             onToggleVoiceOutput={handleToggleVoiceOutput}
             onModelError={onModelError}
+            header={
+              knowledgePanelActive
+                ? {
+                    icon: BookOpen,
+                    title: "Knowledge Base",
+                    subtitle: "Upload, organize, and search your documents. TEJAS can read, understand, and answer questions from them.",
+                  }
+                : undefined
+            }
           />
 
-          <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-5 px-6 pb-6 lg:grid-cols-[1fr_300px]">
-            <section
-              className="relative min-h-0 overflow-hidden rounded-2xl border border-white/[0.06] bg-[#050208]"
-              style={HOLOGRAM_BACKDROP_STYLE}
-            >
-              {/* Full-bleed hologram backdrop — the chat UI below floats on top of it. */}
-              <AssistantCore coreState={coreState} micAnalyserRef={micAnalyserRef} />
+          {knowledgePanelActive ? (
+            <KnowledgePanel ocrAvailable={ocrAvailable} />
+          ) : (
+            <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-5 px-6 pb-6 lg:grid-cols-[1fr_300px]">
+              <section
+                className="relative min-h-0 overflow-hidden rounded-2xl border border-white/[0.06] bg-[#050208]"
+                style={HOLOGRAM_BACKDROP_STYLE}
+              >
+                {/* Full-bleed hologram backdrop — the chat UI below floats on top of it. */}
+                <AssistantCore coreState={coreState} micAnalyserRef={micAnalyserRef} />
 
-              <div className="thin-scroll relative z-10 flex h-full min-h-0 flex-col overflow-y-auto">
-                <p className="pt-12 pb-2 text-center text-[11px] text-white/30">
-                  {assistantName} can make mistakes. Verify important information.
-                </p>
-                <div className="px-5 pb-3">
-                  <ChatInput
-                    disabled={busy}
-                    coreState={coreState}
-                    ttsBoundaryRef={ttsBoundaryRef}
-                    stopSpeaking={stopSpeaking}
-                    onSend={sendMessage}
-                    onSoonClick={onSoon}
-                    onVoiceError={onVoiceError}
-                    exposeMicAnalyserRef={micAnalyserRef}
-                  />
+                <div className="thin-scroll relative z-10 flex h-full min-h-0 flex-col overflow-y-auto">
+                  <p className="pt-12 pb-2 text-center text-[11px] text-white/30">
+                    {assistantName} can make mistakes. Verify important information.
+                  </p>
+                  <div className="px-5 pb-3">
+                    <ChatInput
+                      disabled={busy}
+                      coreState={coreState}
+                      ttsBoundaryRef={ttsBoundaryRef}
+                      stopSpeaking={stopSpeaking}
+                      onSend={sendMessage}
+                      onSoonClick={onSoon}
+                      onVoiceError={onVoiceError}
+                      exposeMicAnalyserRef={micAnalyserRef}
+                    />
+                  </div>
+                  <ConversationPanel />
                 </div>
-                <ConversationPanel />
-              </div>
-            </section>
+              </section>
 
-            <aside className="thin-scroll hidden min-h-0 flex-col gap-3.5 overflow-y-auto pt-1 lg:flex">
-              <StatusPanel />
-              <WeatherWidget />
-              <RecentSessions onOpenSession={openSession} onActiveSessionDeleted={startNewChat} />
-              <RemindersWidget />
-            </aside>
-          </div>
+              <aside className="thin-scroll hidden min-h-0 flex-col gap-3.5 overflow-y-auto pt-1 lg:flex">
+                <StatusPanel />
+                <WeatherWidget />
+                <RecentSessions onOpenSession={openSession} onActiveSessionDeleted={startNewChat} />
+                <RemindersWidget />
+              </aside>
+            </div>
+          )}
         </main>
       </div>
 
@@ -185,10 +200,6 @@ function Dashboard() {
           ttsBoundaryRef={ttsBoundaryRef}
           onExit={() => setVoiceModeActive(false)}
         />
-      )}
-
-      {knowledgePanelActive && (
-        <KnowledgePanel onExit={() => setKnowledgePanelActive(false)} ocrAvailable={ocrAvailable} />
       )}
     </div>
   );

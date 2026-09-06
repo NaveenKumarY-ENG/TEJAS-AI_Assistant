@@ -17,7 +17,7 @@ import { ProfileCard } from "../ui/ProfileCard";
 import { BrandMark } from "./BrandMark";
 
 const NAV_ITEMS = [
-  { icon: Home, label: "Home" },
+  { icon: Home, label: "Home", action: "home" as const },
   { icon: SquarePen, label: "Chats", action: "newChat" as const },
   { icon: Mic, label: "Voice", action: "voice" as const },
   { icon: BookOpen, label: "Knowledge Base", action: "knowledge" as const },
@@ -34,6 +34,7 @@ export function Sidebar({
   voiceModeActive,
   onEnterKnowledge,
   knowledgePanelActive,
+  onGoHome,
   onQuickAction,
   quickActionsDisabled,
 }: {
@@ -43,6 +44,7 @@ export function Sidebar({
   voiceModeActive: boolean;
   onEnterKnowledge: () => void;
   knowledgePanelActive: boolean;
+  onGoHome: () => void;
   onQuickAction: (q: string) => void;
   quickActionsDisabled: boolean;
 }) {
@@ -78,7 +80,8 @@ export function Sidebar({
               key={item.label}
               type="button"
               onClick={() => {
-                if (item.action === "newChat") onNewChat();
+                if (item.action === "home") onGoHome();
+                else if (item.action === "newChat") onNewChat();
                 else if (item.action === "voice") onEnterVoice();
                 else if (item.action === "knowledge") onEnterKnowledge();
                 else if (item.soon) onSoonClick(item.label);

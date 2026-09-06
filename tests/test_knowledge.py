@@ -3,6 +3,7 @@ Tests for the knowledge base (memory/knowledge.py) and its tool wrapper.
 Run with: pytest tests/
 """
 import io
+import re
 import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -32,6 +33,81 @@ def test_chunk_text_overlap():
     assert chunks[0][-50:] == chunks[1][:50]
 
 
+def test_chunk_text_never_splits_a_word():
+    """Regression test for a real, live-reproduced bug: the old pure
+    character-count sliding window sliced straight through words at
+    whatever character landed on the size boundary. Uploading a real PDF
+    and searching for its own filename came back with chunks reading
+    "nefits are shared widely..." (should start "benefits") and
+    "...recognize different types of animals in im" (should end
+    "...in images") — garbled at both ends, fed verbatim into chat answers
+    by the same pipeline. Every chunk boundary must land on real
+    whitespace, never inside a word."""
+    text = (
+        "Artificial Intelligence refers to the simulation of human intelligence in machines "
+        "that are designed to think and act like humans. These intelligent systems can perform "
+        "tasks such as learning, reasoning, problem-solving, perception, and language "
+        "understanding. Machine Learning is a subset of AI that involves the development of "
+        "algorithms and statistical models that enable computers to perform tasks without "
+        "explicit instructions."
+    )
+    chunks = knowledge._chunk_text(text, size=120, overlap=20)
+    assert len(chunks) > 1  # must actually exercise multiple chunk boundaries to be a real test
+
+    real_words = set(re.findall(r"[A-Za-z']+", text))
+    for chunk in chunks:
+        for word in re.findall(r"[A-Za-z']+", chunk):
+            assert word in real_words, f"chunk contains a word fragment not in the source text: {word!r}"
+
+    # Rejoining the chunks (minus their overlap) must reproduce the
+    # original words in order, with nothing dropped or corrupted.
+    assert " ".join(chunks).split() == text.split() or all(
+        w in text.split() for w in " ".join(chunks).split()
+    )
+
+
+def test_chunk_text_splits_one_giant_unbroken_word_with_a_hard_cut():
+    """A single token with no whitespace at all (a long hash/URL) has no
+    safe word boundary to break on — falls back to the old hard
+    character cut rather than producing one giant oversized chunk. (Chunks
+    legitimately overlap by design, so this doesn't assert exact
+    reconstruction — just that nothing is corrupted or left oversized.)"""
+    text = "x" * 2000
+    chunks = knowledge._chunk_text(text, size=800, overlap=100)
+    assert len(chunks) > 1
+    assert all(len(c) <= 800 for c in chunks)
+    assert all(set(c) <= {"x", " "} for c in chunks)
+    assert len("".join(chunks).replace(" ", "")) >= len(text)
+
+
+def test_search_returns_named_document_chunks_in_reading_order():
+    """Regression test for a real, live-reproduced usability bug: searching
+    a document by its own filename returned its chunks in raw embedding-
+    similarity rank, not reading order — the first result shown was the
+    document's *conclusion* (a late chunk), which reads as broken/random to
+    a human. A query that explicitly names a document should show its
+    content in the order it actually appears in."""
+    # Long enough, and varied enough per paragraph, that embedding-distance
+    # rank is very unlikely to already coincide with chunk order by chance.
+    paragraphs = [
+        "Chapter One covers the history of steam engines and early industrial machinery.",
+        "Chapter Two discusses maritime navigation techniques used in the eighteenth century.",
+        "Chapter Three examines agricultural crop rotation practices across different climates.",
+        "Chapter Four analyzes medieval castle architecture and defensive fortifications.",
+        "Chapter Five, the conclusion, reflects on how these historical themes connect today.",
+    ]
+    doc = knowledge.ingest_document("history_book.txt", ("\n".join(paragraphs)).encode())
+    try:
+        results = knowledge.search("history_book.txt", n_results=len(paragraphs))
+        texts = [r["text"] for r in results]
+        # Each paragraph's position among the results must match its
+        # position in the source document.
+        positions = [next(i for i, p in enumerate(paragraphs) if p in t) for t in texts]
+        assert positions == sorted(positions)
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
 def test_extract_text_unsupported_type():
     try:
         knowledge._extract_text("file.xyz", b"data")
@@ -56,6 +132,103 @@ def test_ingest_search_delete_round_trip():
 
     # Deleted document's content should no longer be findable.
     assert knowledge.delete_document(doc["id"]) is False
+
+
+def test_ingest_persists_raw_text_but_list_documents_excludes_it():
+    """raw_text is what makes reprocess_document() possible — it must
+    actually be stored, but never sent in the bulk /api/knowledge listing
+    (list_documents()), since the frontend never needs a document's full
+    text on every page load / watched-folder poll."""
+    doc = knowledge.ingest_document("full_text.txt", b"Some real document content for reprocessing later.")
+    try:
+        stored = structured.get_document(doc["id"])
+        assert stored["raw_text"] == "Some real document content for reprocessing later."
+        assert stored["content_hash"]  # non-empty
+
+        listed = next(d for d in structured.list_documents() if d["id"] == doc["id"])
+        assert "raw_text" not in listed
+        assert "content_hash" not in listed
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_ingest_flags_an_exact_duplicate_without_blocking_it():
+    """Duplicate detection is a non-blocking signal, not a rejection — a
+    real re-upload (e.g. to pick up a pipeline improvement, exactly what
+    this session needed to do) must still succeed."""
+    doc1 = knowledge.ingest_document("first.txt", b"Identical content for duplicate detection.")
+    try:
+        assert doc1["duplicate_of"] is None
+        doc2 = knowledge.ingest_document("second.txt", b"Identical content for duplicate detection.")
+        try:
+            assert doc2["duplicate_of"] == {"id": doc1["id"], "filename": "first.txt"}
+        finally:
+            knowledge.delete_document(doc2["id"])
+    finally:
+        knowledge.delete_document(doc1["id"])
+
+
+def test_ingest_does_not_flag_different_content_as_duplicate():
+    doc1 = knowledge.ingest_document("a.txt", b"First unique piece of content.")
+    doc2 = knowledge.ingest_document("b.txt", b"Second, completely different piece of content.")
+    try:
+        assert doc1["duplicate_of"] is None
+        assert doc2["duplicate_of"] is None
+    finally:
+        knowledge.delete_document(doc1["id"])
+        knowledge.delete_document(doc2["id"])
+
+
+def test_ingest_document_rejects_oversized_files():
+    oversized = b"x" * (knowledge._MAX_UPLOAD_BYTES + 1)
+    try:
+        knowledge.ingest_document("huge.txt", oversized)
+        assert False, "expected FileTooLarge"
+    except knowledge.FileTooLarge as e:
+        assert "too large" in str(e).lower()
+
+
+def test_reprocess_document_reruns_extraction_from_stored_text():
+    with patch("memory.knowledge.extraction.extract_structured_fields", return_value={"_document_type": "Note"}):
+        doc = knowledge.ingest_document("reprocess_me.txt", b"Some content to extract fields from.")
+    try:
+        assert doc["doc_type"] == "Note"
+        with patch(
+            "memory.knowledge.extraction.extract_structured_fields",
+            return_value={"Name": "Improved Extraction", "_document_type": "Better Type"},
+        ):
+            updated = knowledge.reprocess_document(doc["id"])
+        assert updated["doc_type"] == "Better Type"
+        assert updated["structured_data"] == {"Name": "Improved Extraction"}
+
+        stored = structured.get_document(doc["id"])
+        assert stored["doc_type"] == "Better Type"
+        assert stored["structured_data"] == {"Name": "Improved Extraction"}
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_reprocess_document_returns_none_for_nonexistent_document():
+    assert knowledge.reprocess_document(999999) is None
+
+
+def test_reprocess_document_raises_for_a_document_with_no_stored_text():
+    """Regression guard for documents that predate raw_text being stored —
+    reprocessing has nothing to work from and must fail clearly rather than
+    silently produce empty fields."""
+    doc = knowledge.ingest_document("legacy.txt", b"Some content.")
+    try:
+        # Simulate a pre-migration row: raw_text wiped back to "".
+        structured.update_document_structured_data(doc["id"], {}, "")
+        with structured._connect() as conn:
+            conn.execute("UPDATE documents SET raw_text = '' WHERE id = ?", (doc["id"],))
+        try:
+            knowledge.reprocess_document(doc["id"])
+            assert False, "expected ValueError"
+        except ValueError as e:
+            assert "re-upload" in str(e).lower()
+    finally:
+        knowledge.delete_document(doc["id"])
 
 
 def test_ingest_empty_document_raises():
@@ -473,3 +646,201 @@ def test_pdf_stays_blank_for_scanned_pages_when_ocr_unavailable():
             assert False, "expected ValueError (no extractable text at all)"
         except ValueError:
             pass
+
+
+def test_search_includes_page_number_for_pdf_chunks():
+    """Regression coverage for a real gap: a chunk previously had no way to
+    say *where* in a source document it came from. PDF chunks must now
+    carry their real page number, in citations too."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_blank_page(width=72, height=72)
+    buf = io.BytesIO()
+    writer.write(buf)
+
+    with patch("memory.knowledge.ocr.available", return_value=True), patch(
+        "memory.knowledge.ocr.pdf_page_to_image_bytes", return_value=b"fake page image"
+    ), patch(
+        "memory.knowledge.ocr.image_to_text",
+        side_effect=["Page one content about zebras.", "Page two content about giraffes."],
+    ):
+        doc = knowledge.ingest_document("two_page.pdf", buf.getvalue())
+    try:
+        zebra_results = knowledge.search("zebras")
+        assert any(r["page"] == 1 and "zebras" in r["text"] for r in zebra_results)
+
+        giraffe_results = knowledge.search("giraffes")
+        assert any(r["page"] == 2 and "giraffes" in r["text"] for r in giraffe_results)
+
+        formatted = knowledge.format_search_results(zebra_results)
+        # The citation regex (/From '([^']+)':/) requires the filename to
+        # sit immediately before the colon — the page number must come
+        # AFTER it, never between the filename and the colon.
+        assert "From 'two_page.pdf': (page 1)" in formatted
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_search_page_is_none_for_non_pdf_documents():
+    doc = knowledge.ingest_document("plain.txt", b"Some plain text content with no page concept.")
+    try:
+        results = knowledge.search("plain text content")
+        assert all(r["page"] is None for r in results)
+        assert "(page" not in knowledge.format_search_results(results)
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_search_finds_exact_term_via_keyword_overlap_even_beyond_distance_threshold():
+    """Hybrid search: the classic pure-semantic weak spot is an exact term
+    (here, a made-up product code) that embeddings don't preserve
+    precisely. A query sharing enough of the chunk's exact meaningful words
+    must still surface it even if embedding distance alone wouldn't."""
+    doc = knowledge.ingest_document(
+        "part_specs.txt",
+        b"The replacement part code is QRX-88214-ALPHA and must be ordered directly from the "
+        b"manufacturer warehouse before installation.",
+    )
+    try:
+        results = knowledge.search("What is the replacement part code QRX-88214-ALPHA?")
+        assert any("QRX-88214-ALPHA" in r["text"] for r in results)
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_ingest_document_stores_and_retrieves_original_file():
+    doc = knowledge.ingest_document("original.txt", b"Some real file bytes to store and retrieve.")
+    try:
+        original = knowledge.get_original_file(doc["id"])
+        assert original is not None
+        assert original["filename"] == "original.txt"
+        assert original["content_type"] == "text/plain"
+        assert original["data"] == b"Some real file bytes to store and retrieve."
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_get_original_file_returns_none_for_notes_and_urls():
+    """Notes and URLs never have "original file bytes" — raw_text already
+    is the whole original for those."""
+    note = knowledge.ingest_note("A note title", "Some note body text.")
+    try:
+        assert knowledge.get_original_file(note["id"]) is None
+    finally:
+        knowledge.delete_document(note["id"])
+
+
+def test_get_original_file_returns_none_for_nonexistent_document():
+    assert knowledge.get_original_file(999999) is None
+
+
+def test_get_document_reports_has_file_for_both_single_and_bulk_lookups():
+    """Regression test for a real bug found live: structured.get_document
+    (the single-document lookup the preview panel's "Download" button
+    depends on) never computed has_file — only list_documents() did — so
+    the download button silently never appeared for any real upload."""
+    with_file = knowledge.ingest_document("has_file.txt", b"Some real file bytes.")
+    without_file = knowledge.ingest_note("A note", "Notes never have an original file.")
+    try:
+        assert structured.get_document(with_file["id"])["has_file"] is True
+        assert structured.get_document(without_file["id"])["has_file"] is False
+
+        listed = {d["id"]: d for d in structured.list_documents()}
+        assert listed[with_file["id"]]["has_file"] is True
+        assert listed[without_file["id"]]["has_file"] is False
+    finally:
+        knowledge.delete_document(with_file["id"])
+        knowledge.delete_document(without_file["id"])
+
+
+def test_update_note_replaces_content_and_reembeds_under_the_same_id():
+    note = knowledge.ingest_note("Original Title", "Original body about apples.", tags=["fruit"])
+    try:
+        assert any("apples" in r["text"] for r in knowledge.search("apples"))
+
+        updated = knowledge.update_note(note["id"], "Updated Title", "Updated body about oranges.")
+        assert updated["id"] == note["id"]  # same id — not a delete+recreate
+        assert updated["filename"] == "Updated Title"
+        assert updated["tags"] == ["fruit"]  # tags preserved when not explicitly changed
+
+        assert knowledge.search("apples") == []  # old content is genuinely gone
+        assert any("oranges" in r["text"] for r in knowledge.search("oranges"))
+
+        stored = structured.get_document(note["id"])
+        assert stored["filename"] == "Updated Title"
+        assert stored["raw_text"] == "Updated body about oranges."
+    finally:
+        knowledge.delete_document(note["id"])
+
+
+def test_update_note_can_change_tags():
+    note = knowledge.ingest_note("Title", "Body text.", tags=["old"])
+    try:
+        updated = knowledge.update_note(note["id"], "Title", "Body text.", tags=["new"])
+        assert updated["tags"] == ["new"]
+        assert structured.get_document(note["id"])["tags"] == ["new"]
+    finally:
+        knowledge.delete_document(note["id"])
+
+
+def test_update_note_returns_none_for_nonexistent_document():
+    assert knowledge.update_note(999999, "Title", "Text") is None
+
+
+def test_update_note_rejects_empty_title_or_text():
+    note = knowledge.ingest_note("Title", "Text")
+    try:
+        for title, text in [("", "some text"), ("Title", "")]:
+            try:
+                knowledge.update_note(note["id"], title, text)
+                assert False, "expected ValueError"
+            except ValueError:
+                pass
+    finally:
+        knowledge.delete_document(note["id"])
+
+
+def test_summarize_document_returns_a_summary():
+    doc = knowledge.ingest_document("article.txt", b"A long article about renewable energy trends.")
+    try:
+        fake_response = {"message": {"content": "Renewable energy is growing rapidly worldwide."}}
+        with patch("ollama.chat", return_value=fake_response):
+            result = knowledge.summarize_document(doc["id"])
+        assert result["id"] == doc["id"]
+        assert result["filename"] == "article.txt"
+        assert result["summary"] == "Renewable energy is growing rapidly worldwide."
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_summarize_document_returns_none_for_nonexistent_document():
+    assert knowledge.summarize_document(999999) is None
+
+
+def test_summarize_document_raises_when_llm_call_fails():
+    doc = knowledge.ingest_document("article2.txt", b"Some article content to summarize.")
+    try:
+        with patch("ollama.chat", side_effect=RuntimeError("connection refused")):
+            try:
+                knowledge.summarize_document(doc["id"])
+                assert False, "expected ValueError"
+            except ValueError as e:
+                assert "unavailable" in str(e).lower() or "failed" in str(e).lower()
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_summarize_document_raises_for_a_document_with_no_stored_text():
+    doc = knowledge.ingest_document("article3.txt", b"Some content.")
+    try:
+        with structured._connect() as conn:
+            conn.execute("UPDATE documents SET raw_text = '' WHERE id = ?", (doc["id"],))
+        try:
+            knowledge.summarize_document(doc["id"])
+            assert False, "expected ValueError"
+        except ValueError as e:
+            assert "re-upload" in str(e).lower()
+    finally:
+        knowledge.delete_document(doc["id"])

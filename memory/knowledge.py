@@ -7,12 +7,18 @@ mixing "things that might be wrong" with "things that should be trusted"
 is exactly the class of bug that once let a stale, wrong answer keep
 resurfacing as if it were fact (see agent/loop.py's VOLATILE_TOOLS).
 """
+import hashlib
 import io
+import logging
+import re
 
 import requests
 
+from config import config
 from memory import extraction, ocr, structured
 from memory.vector import get_client
+
+logger = logging.getLogger("assistant.knowledge")
 
 _collection = get_client().get_or_create_collection(name="knowledge_base")
 
@@ -20,6 +26,14 @@ _collection = get_client().get_or_create_collection(name="knowledge_base")
 # server's Content-Length header is honest, this bounds parsing cost against
 # an accidentally (or maliciously) huge page.
 _MAX_HTML_BYTES = 2_000_000
+
+# Hard cap on an uploaded file's raw size — previously unbounded entirely: a
+# huge accidental upload (or a deliberately hostile one) would tie up a
+# worker thread extracting/OCR-ing/embedding it with no timeout and no
+# feedback beyond a spinner. 25MB comfortably covers a real personal
+# document (even a scanned, image-heavy PDF of a few dozen pages) while
+# keeping a worst-case upload's processing time bounded.
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 class UnsupportedFileType(Exception):
@@ -30,7 +44,27 @@ class OCRUnavailable(Exception):
     pass
 
 
+class FileTooLarge(Exception):
+    pass
+
+
 _IMAGE_EXTENSIONS = ("png", "jpg", "jpeg")
+
+
+def _extract_pdf_pages(data: bytes) -> list[str]:
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    pages = []
+    for i, page in enumerate(reader.pages):
+        text = (page.extract_text() or "").strip()
+        if not text and ocr.available():
+            # No real text layer on this page (a scanned/image-only
+            # page) — render it and OCR it instead of leaving it blank.
+            image_bytes = ocr.pdf_page_to_image_bytes(data, i)
+            text = ocr.image_to_text(image_bytes)
+        pages.append(text)
+    return pages
 
 
 def _extract_text(filename: str, data: bytes) -> str:
@@ -38,19 +72,7 @@ def _extract_text(filename: str, data: bytes) -> str:
     if ext in ("txt", "md"):
         return data.decode("utf-8", errors="replace")
     if ext == "pdf":
-        from pypdf import PdfReader
-
-        reader = PdfReader(io.BytesIO(data))
-        pages = []
-        for i, page in enumerate(reader.pages):
-            text = (page.extract_text() or "").strip()
-            if not text and ocr.available():
-                # No real text layer on this page (a scanned/image-only
-                # page) — render it and OCR it instead of leaving it blank.
-                image_bytes = ocr.pdf_page_to_image_bytes(data, i)
-                text = ocr.image_to_text(image_bytes)
-            pages.append(text)
-        return "\n".join(pages)
+        return "\n".join(_extract_pdf_pages(data))
     if ext == "docx":
         from docx import Document
 
@@ -66,6 +88,24 @@ def _extract_text(filename: str, data: bytes) -> str:
     raise UnsupportedFileType(
         f"Unsupported file type: .{ext or '?'} (supported: .txt, .md, .pdf, .docx, .png, .jpg, .jpeg)"
     )
+
+
+def _extract_pages(filename: str, data: bytes) -> list[tuple[int | None, str]]:
+    """Page-tagged extraction — only PDFs have a real page concept; every
+    other supported type comes back as a single untagged (None) page. Used
+    by ingest_document so each chunk's metadata (and therefore chat
+    citations, via search()/format_search_results) can say "page N" — a
+    chunk previously had no way to point back to *where* in the source
+    document it came from. Trade-off: chunking happens per-page rather
+    than across the whole joined document, so a paragraph that spans a
+    page break gets split there even when there'd be room to keep it
+    together — an acceptable cost for a citation that's actually correct,
+    and the existing overlap mechanism still gives each page's first/last
+    chunk some neighboring context."""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext == "pdf":
+        return [(i + 1, text) for i, text in enumerate(_extract_pdf_pages(data))]
+    return [(None, _extract_text(filename, data))]
 
 
 def _extract_text_from_html(html: str) -> str:
@@ -84,46 +124,140 @@ def _extract_text_from_html(html: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_into_sentences(text: str) -> list[str]:
+    """Best-effort sentence splitter for finding safe chunk-boundary points
+    — not linguistically precise, matching this codebase's preference for
+    small custom logic over a heavy NLP library (e.g. frontend/src/utils/
+    text.ts's hand-rolled sentence splitter) for something this
+    straightforward. Splits on newlines first: a PDF's own line breaks
+    (including ones that land mid-sentence, from pypdf's layout-based
+    extraction) are still a safe place to break for chunk-packing purposes,
+    since _chunk_text below rejoins consecutive segments with a single
+    space regardless of where they came from."""
+    parts = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts.extend(s.strip() for s in _SENTENCE_SPLIT_RE.split(line) if s.strip())
+    return parts
+
+
+def _split_long_segment(segment: str, size: int) -> list[str]:
+    """Break a single sentence/line too long to fit in one chunk at the
+    last whitespace before `size` chars — never mid-word. Falls back to a
+    hard character cut only when the segment has no whitespace at all
+    within the window (e.g. one giant unbroken token), matching the old
+    behavior for that pathological case."""
+    pieces = []
+    while len(segment) > size:
+        cut = segment.rfind(" ", 0, size)
+        if cut <= 0:
+            cut = size  # no whitespace to break on — hard cut, same as before
+        pieces.append(segment[:cut].strip())
+        segment = segment[cut:].strip()
+    if segment:
+        pieces.append(segment)
+    return pieces
+
+
 def _chunk_text(text: str, size: int = 800, overlap: int = 100) -> list[str]:
-    """Simple sliding-window character split — no tokenizer dependency,
-    matching this codebase's preference for small custom logic over heavy
-    libraries (e.g. frontend/src/utils/text.ts's hand-rolled sentence
-    splitter) for something this straightforward."""
+    """Pack sentences/lines into ~`size`-character chunks, breaking only at
+    sentence or word boundaries — never mid-word. The previous
+    implementation was a pure character-count sliding window (text[start:
+    start+size]) with zero regard for word boundaries: confirmed live as a
+    real, high-impact bug — real chunks came back reading "nefits are
+    shared..." (should start "benefits") and "...recognize different types
+    of animals in im" (should end "...in images"), both in the Knowledge
+    Base's own search results and in every chat answer the RAG pipeline
+    built from them, since search() feeds these same chunks to the model.
+    `overlap` chars of the previous chunk's tail are carried into the next
+    chunk for retrieval continuity, snapped forward to a word boundary so
+    the overlap itself doesn't start mid-word either."""
     text = text.strip()
     if not text:
         return []
+
+    segments = []
+    for sentence in _split_into_sentences(text):
+        segments.extend(_split_long_segment(sentence, size))
+
     chunks = []
-    start = 0
-    while start < len(text):
-        end = start + size
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= len(text):
-            break
-        start = end - overlap
+    current = ""
+    for segment in segments:
+        candidate = f"{current} {segment}".strip() if current else segment
+        if not current or len(candidate) <= size:
+            current = candidate
+            continue
+        chunks.append(current)
+        tail = current[-overlap:]
+        space = tail.find(" ")
+        if space != -1:
+            tail = tail[space + 1 :]  # drop the partial word at the start of the overlap window
+        seed = f"{tail} {segment}".strip() if tail else segment
+        # A carried-over tail can occasionally push the seed itself past
+        # `size` (e.g. a segment that's already near the size limit) — drop
+        # the overlap rather than start the next chunk already oversized.
+        current = seed if len(seed) <= size else segment
+    if current:
+        chunks.append(current)
     return chunks
 
 
-def _index_text(source: str, text: str, tags: list[str] | None = None, source_type: str = "manual") -> dict:
-    """Chunk, embed, and record a piece of already-extracted text under
+def _index_pages(
+    source: str, pages: list[tuple[int | None, str]], tags: list[str] | None = None, source_type: str = "manual"
+) -> dict:
+    """Chunk, embed, and record already-extracted, page-tagged text under
     `source` (a filename, URL, or note title — all just a label to the
-    store). Also attempts structured field extraction (memory/extraction.py)
-    — best-effort, never blocks or fails ingestion if it comes back empty.
-    Returns metadata (id, filename, chunk_count, tags, doc_type,
-    structured_data). Raises ValueError if there's no extractable text — the
-    caller turns this into a 400."""
-    chunks = _chunk_text(text)
+    store). `pages` is a list of (page_number_or_None, text) — most callers
+    pass a single (None, text) entry; ingest_document passes one entry per
+    PDF page (see _extract_pages) so each resulting chunk can carry the
+    page it came from. Also attempts structured field extraction
+    (memory/extraction.py) against the full joined text — best-effort,
+    never blocks or fails ingestion if it comes back empty.
+
+    The full text is persisted alongside the chunks (structured.add_document's
+    raw_text) — previously it existed only transiently in memory during
+    ingestion, which meant reprocess_document()/summarize_document() below
+    couldn't exist at all, and any chunking-quality fix could only ever
+    apply to documents uploaded *after* it shipped. Returns metadata (id,
+    filename, chunk_count, tags, doc_type, structured_data, and
+    duplicate_of — the existing document's {id, filename} if this exact
+    text was already ingested, or None). Raises ValueError if there's no
+    extractable text — the caller turns this into a 400.
+
+    Duplicate detection is deliberately a non-blocking signal, not a
+    rejection: ingestion still proceeds either way. A hard block would have
+    gotten in the way of a perfectly legitimate re-upload (e.g. re-ingesting
+    a document to pick up a pipeline improvement, exactly what this session
+    needed to do for a real document right after fixing _chunk_text) — the
+    caller/UI decides what to do with the warning."""
+    chunks: list[tuple[str, int]] = []  # (chunk_text, page_or_0)
+    for page_num, page_text in pages:
+        for c in _chunk_text(page_text):
+            chunks.append((c, page_num or 0))
     if not chunks:
         raise ValueError(f"No extractable text found in '{source}'")
 
-    fields = extraction.extract_structured_fields(text)
+    full_text = "\n".join(t for _, t in pages).strip()
+    content_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
+    existing = structured.find_document_by_hash(content_hash)
+
+    fields = extraction.extract_structured_fields(full_text)
     doc_type = fields.pop("_document_type", "") if fields else ""
 
-    document_id = structured.add_document(source, len(chunks), tags, source_type, fields, doc_type)
+    document_id = structured.add_document(
+        source, len(chunks), tags, source_type, fields, doc_type, raw_text=full_text, content_hash=content_hash
+    )
     ids = [f"{document_id}_{i}" for i in range(len(chunks))]
-    metadatas = [{"document_id": document_id, "filename": source, "chunk_index": i} for i in range(len(chunks))]
-    _collection.add(documents=chunks, metadatas=metadatas, ids=ids)
+    metadatas = [
+        {"document_id": document_id, "filename": source, "chunk_index": i, "page": page}
+        for i, (_, page) in enumerate(chunks)
+    ]
+    _collection.add(documents=[c for c, _ in chunks], metadatas=metadatas, ids=ids)
     return {
         "id": document_id,
         "filename": source,
@@ -131,17 +265,138 @@ def _index_text(source: str, text: str, tags: list[str] | None = None, source_ty
         "tags": tags or [],
         "doc_type": doc_type,
         "structured_data": fields,
+        "duplicate_of": {"id": existing["id"], "filename": existing["filename"]} if existing else None,
     }
 
 
 def ingest_document(
     filename: str, data: bytes, tags: list[str] | None = None, source_type: str = "manual"
 ) -> dict:
-    """Extract, chunk, and embed an uploaded file. Raises UnsupportedFileType,
-    OCRUnavailable, or ValueError — the caller (server.py) turns these into
-    a 400."""
-    text = _extract_text(filename, data)
-    return _index_text(filename, text, tags, source_type)
+    """Extract, chunk, and embed an uploaded file — and keep the original
+    bytes (structured.save_document_file) so "download the original" and
+    reprocessing survive a future pipeline change without needing a
+    re-upload. Raises UnsupportedFileType, OCRUnavailable, FileTooLarge, or
+    ValueError — the caller (server.py) turns these into a 400."""
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise FileTooLarge(
+            f"File is too large ({len(data) / 1_048_576:.1f}MB) — the limit is "
+            f"{_MAX_UPLOAD_BYTES // 1_048_576}MB per upload."
+        )
+    pages = _extract_pages(filename, data)
+    doc = _index_pages(filename, pages, tags, source_type)
+    structured.save_document_file(doc["id"], _content_type_for(filename), data)
+    return doc
+
+
+_CONTENT_TYPES = {
+    "txt": "text/plain",
+    "md": "text/markdown",
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+}
+
+
+def _content_type_for(filename: str) -> str:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return _CONTENT_TYPES.get(ext, "application/octet-stream")
+
+
+def get_original_file(document_id: int) -> dict | None:
+    """The bytes ingest_document stored, for a "download original" action.
+    Returns {"filename", "content_type", "data"}, or None if the document
+    doesn't exist or has no stored file (notes/URLs never have one — there
+    is no "original file" for text typed directly into the app, or a page
+    fetched from the web; raw_text already *is* the full original for
+    those)."""
+    doc = structured.get_document(document_id)
+    if doc is None:
+        return None
+    file_row = structured.get_document_file(document_id)
+    if file_row is None:
+        return None
+    return {"filename": doc["filename"], "content_type": file_row["content_type"], "data": file_row["data"]}
+
+
+def reprocess_document(document_id: int) -> dict | None:
+    """Re-run structured field extraction (memory/extraction.py) against a
+    document's stored text, without needing the original file re-uploaded —
+    useful after improving the extraction prompt, or if the first pass
+    missed something. Returns the updated {id, filename, doc_type,
+    structured_data}, or None if the document doesn't exist. Raises
+    ValueError if the document predates raw_text being stored (nothing to
+    reprocess from) — the caller turns this into a 400 telling the user to
+    re-upload."""
+    doc = structured.get_document(document_id)
+    if doc is None:
+        return None
+    if not doc["raw_text"]:
+        raise ValueError(
+            "This document was uploaded before reprocessing was supported and has no stored "
+            "content to re-extract from — re-upload it to enable this."
+        )
+    fields = extraction.extract_structured_fields(doc["raw_text"])
+    doc_type = fields.pop("_document_type", "") if fields else ""
+    structured.update_document_structured_data(document_id, fields, doc_type)
+    return {"id": document_id, "filename": doc["filename"], "doc_type": doc_type, "structured_data": fields}
+
+
+# ID cards/invoices are short; a summarization target is the opposite case
+# (an article, a report, a chapter) so this gets a much larger budget than
+# extraction.py's _MAX_INPUT_CHARS (6000). Still a single bounded pass, not
+# real map-reduce summarization across chunks — a genuinely book-length
+# document gets a summary of its first ~15000 characters, not the whole
+# thing. Real full-document summarization (map-reduce over chunks) is
+# worthwhile future work, not attempted here.
+_MAX_SUMMARIZE_INPUT_CHARS = 15000
+
+_SUMMARIZE_PROMPT = (
+    "Summarize the following document in 3-5 concise, plain-prose sentences covering its main "
+    "points. Do not add commentary, headers, or bullet points — just the summary sentences.\n\n"
+    "---\n{text}\n---"
+)
+
+
+def summarize_document(document_id: int) -> dict | None:
+    """One-pass summarization of a document's stored text via the local
+    LLM — deliberately always local (same reasoning as
+    memory/extraction.py: direct `ollama.chat`, bypassing
+    agent/llm_client.py's provider abstraction) regardless of which chat
+    provider is active. Returns {id, filename, summary}, or None if the
+    document doesn't exist. Raises ValueError if there's no stored text, or
+    if the local model call itself fails — unlike extraction (best-effort,
+    runs silently on every upload), this is an explicit, on-demand user
+    action, so a real error surfaced to the user beats silently returning
+    nothing."""
+    doc = structured.get_document(document_id)
+    if doc is None:
+        return None
+    if not doc["raw_text"]:
+        raise ValueError(
+            "This document has no stored content to summarize — re-upload it to enable this."
+        )
+    import ollama
+
+    try:
+        response = ollama.chat(
+            model=config.ollama_model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": _SUMMARIZE_PROMPT.format(text=doc["raw_text"][:_MAX_SUMMARIZE_INPUT_CHARS]),
+                }
+            ],
+            options={"temperature": 0.3},
+        )
+        summary = response["message"]["content"].strip()
+    except Exception:
+        logger.exception("Document summarization failed")
+        raise ValueError("Summarization failed — the local model may be unavailable. Try again in a moment.")
+    if not summary:
+        raise ValueError("Summarization returned nothing — try again.")
+    return {"id": document_id, "filename": doc["filename"], "summary": summary}
 
 
 def ingest_url(url: str, tags: list[str] | None = None) -> dict:
@@ -151,7 +406,7 @@ def ingest_url(url: str, tags: list[str] | None = None) -> dict:
     response = requests.get(url, timeout=10, headers={"User-Agent": "TEJAS-Assistant/1.0"})
     response.raise_for_status()
     text = _extract_text_from_html(response.text[:_MAX_HTML_BYTES])
-    return _index_text(url, text, tags)
+    return _index_pages(url, [(None, text)], tags)
 
 
 def ingest_note(title: str, text: str, tags: list[str] | None = None) -> dict:
@@ -164,7 +419,59 @@ def ingest_note(title: str, text: str, tags: list[str] | None = None) -> dict:
         raise ValueError("Note title cannot be empty")
     if not text:
         raise ValueError("Note text cannot be empty")
-    return _index_text(title, text, tags)
+    return _index_pages(title, [(None, text)], tags)
+
+
+def update_note(document_id: int, title: str, text: str, tags: list[str] | None = None) -> dict | None:
+    """Replace a note's title/text in place, re-chunking and re-embedding
+    under the SAME document id — editing a note previously meant delete +
+    recreate, which lost its position in the list and forced re-tagging
+    from scratch. Returns the updated {id, filename, chunk_count, tags,
+    doc_type, structured_data}, or None if the document doesn't exist.
+    Raises ValueError for an empty title/text, same as ingest_note.
+    Works against any document by id, not just ones actually created via
+    ingest_note — the Notes/Documents split is a frontend filename-shape
+    heuristic (see KnowledgePanel.tsx's isNoteSource), not a backend
+    distinction, so there's nothing meaningful to enforce here."""
+    title = title.strip()
+    text = text.strip()
+    if not title:
+        raise ValueError("Note title cannot be empty")
+    if not text:
+        raise ValueError("Note text cannot be empty")
+
+    doc = structured.get_document(document_id)
+    if doc is None:
+        return None
+
+    chunks = _chunk_text(text)
+    if not chunks:
+        raise ValueError("No extractable text found in the note")
+
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    fields = extraction.extract_structured_fields(text)
+    doc_type = fields.pop("_document_type", "") if fields else ""
+
+    _collection.delete(where={"document_id": document_id})
+    ids = [f"{document_id}_{i}" for i in range(len(chunks))]
+    metadatas = [
+        {"document_id": document_id, "filename": title, "chunk_index": i, "page": 0} for i in range(len(chunks))
+    ]
+    _collection.add(documents=chunks, metadatas=metadatas, ids=ids)
+
+    final_tags = tags if tags is not None else doc["tags"]
+    structured.update_document_content(document_id, title, len(chunks), text, content_hash, fields, doc_type)
+    if tags is not None and tags != doc["tags"]:
+        structured.update_document_tags(document_id, final_tags)
+
+    return {
+        "id": document_id,
+        "filename": title,
+        "chunk_count": len(chunks),
+        "tags": final_tags,
+        "doc_type": doc_type,
+        "structured_data": fields,
+    }
 
 
 def update_tags(document_id: int, tags: list[str]) -> bool:
@@ -242,6 +549,40 @@ def is_structured_table(text: str) -> bool:
 # again as the knowledge base's contents change.
 _MAX_RELEVANT_DISTANCE = 1.2
 
+# A short, generic word list to exclude from keyword-overlap matching below
+# — otherwise "what does the document say about" would itself count as
+# overlapping words against nearly anything.
+_STOPWORDS = frozenset(
+    "the a an is are was were in on at to for of and or what how does do did this that with from "
+    "about tell me my you your it its be can could would should will has have had which who whom".split()
+)
+
+# A second, independent relevance signal alongside embedding distance —
+# closes the classic pure-semantic-search weak spot: an exact term (an
+# invoice number, an error code, an acronym, a proper noun) that embeddings
+# compress into vague vector space rather than preserving precisely. A
+# chunk beyond _MAX_RELEVANT_DISTANCE still counts as relevant if MOST of
+# the query's meaningful words appear in it verbatim — both a high ratio
+# (not just one word coincidentally in common) and at least two matched
+# words are required, since a single generic overlap isn't a strong enough
+# signal on its own. Deliberately conservative: this only ever adds matches
+# among the n_results candidates embedding search already surfaced, never
+# searches the whole corpus by keyword.
+_MIN_KEYWORD_OVERLAP_RATIO = 0.6
+_MIN_KEYWORD_OVERLAP_COUNT = 2
+_WORD_RE = re.compile(r"[a-z0-9']{3,}")
+
+
+def _significant_words(text: str) -> set[str]:
+    return {w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS}
+
+
+def _keyword_overlap_hit(query_words: set[str], chunk_text: str) -> bool:
+    if not query_words:
+        return False
+    matched = query_words & _significant_words(chunk_text)
+    return len(matched) >= _MIN_KEYWORD_OVERLAP_COUNT and len(matched) / len(query_words) >= _MIN_KEYWORD_OVERLAP_RATIO
+
 
 def _filenames_mentioned_in(query: str) -> set[str]:
     """Document filenames that appear verbatim (case-insensitive) in the
@@ -263,9 +604,12 @@ def _filenames_mentioned_in(query: str) -> set[str]:
 def search(query: str, n_results: int = 5) -> list[dict]:
     """Retrieve the most semantically relevant chunks across all uploaded
     documents, excluding anything too far from the query to actually be
-    relevant — unless the query directly names the document by filename,
-    which always counts as relevant regardless of embedding distance (see
-    _filenames_mentioned_in). Returns [{filename, text}, ...].
+    relevant — unless the query directly names the document by filename
+    (see _filenames_mentioned_in) or shares enough exact meaningful words
+    with the chunk (see _keyword_overlap_hit), either of which always
+    counts as relevant regardless of embedding distance. Returns
+    [{filename, text, page}, ...] — page is None for anything without a
+    real page concept (everything except a PDF chunk).
 
     When a matched chunk belongs to a document with extracted structured
     data (an ID card, an invoice, ...), its raw chunk text is swapped for
@@ -276,6 +620,7 @@ def search(query: str, n_results: int = 5) -> list[dict]:
     if _collection.count() == 0:
         return []
     named_filenames = _filenames_mentioned_in(query)
+    query_words = _significant_words(query)
     query_kwargs = {"query_texts": [query], "n_results": min(n_results, _collection.count())}
     if named_filenames:
         # An explicit filename reference scopes the search to just that
@@ -294,23 +639,41 @@ def search(query: str, n_results: int = 5) -> list[dict]:
     docs = results["documents"][0] if results["documents"] else []
     metas = results["metadatas"][0] if results["metadatas"] else []
     dists = results["distances"][0] if results["distances"] else []
+    rows = list(zip(docs, metas, dists))
+
+    if named_filenames:
+        # The `where` filter above guarantees every row here belongs to a
+        # named document, so this is safe to sort unconditionally. Reading
+        # order beats raw similarity rank for a query that names a specific
+        # document — confirmed live as a real usability bug: searching a
+        # document by its own filename returned its *conclusion* (a late
+        # chunk) first and an early chunk fourth, an order that reads as
+        # arbitrary/broken to a human skimming results even though every
+        # individual chunk was itself a legitimate match. Chunks from
+        # documents that weren't named stay in similarity rank — there's no
+        # equally strong ordering signal for those.
+        rows.sort(key=lambda row: row[1].get("chunk_index", 0))
 
     output = []
     seen_structured_doc_ids = set()
-    for d, m, dist in zip(docs, metas, dists):
+    for d, m, dist in rows:
         filename = m.get("filename", "unknown")
-        if dist > _MAX_RELEVANT_DISTANCE and filename not in named_filenames:
+        relevant = (
+            dist <= _MAX_RELEVANT_DISTANCE or filename in named_filenames or _keyword_overlap_hit(query_words, d)
+        )
+        if not relevant:
             continue
         document_id = m.get("document_id")
         doc_row = structured.get_document(document_id) if document_id is not None else None
+        page = m.get("page") or None  # 0 (the "no page" sentinel) -> None
 
         if doc_row and doc_row["structured_data"]:
             if document_id in seen_structured_doc_ids:
                 continue
             seen_structured_doc_ids.add(document_id)
-            output.append({"filename": filename, "text": format_structured_table(doc_row)})
+            output.append({"filename": filename, "text": format_structured_table(doc_row), "page": None})
         else:
-            output.append({"filename": filename, "text": d})
+            output.append({"filename": filename, "text": d, "page": page})
     return output
 
 
@@ -344,10 +707,17 @@ def format_search_results(results: list[dict]) -> str:
     tool call, and agent/loop.py's proactive per-turn injection. Shared so
     both paths produce byte-identical output — frontend/src/hooks/
     useAssistantSocket.ts's citation extraction depends on this exact
-    "From 'filename': text" shape regardless of which path produced it."""
+    "From 'filename':" PREFIX (its regex is /From '([^']+)':/ — the
+    filename must sit immediately before the colon with nothing in
+    between), so a page number, when known, is appended right AFTER the
+    colon instead: "From 'filename': (page N) text..."."""
     if not results:
         return "No relevant documents found in the knowledge base."
-    return "\n\n".join(f"From '{r['filename']}': {r['text']}" for r in results)
+    lines = []
+    for r in results:
+        page_prefix = f"(page {r['page']}) " if r.get("page") else ""
+        lines.append(f"From '{r['filename']}': {page_prefix}{r['text']}")
+    return "\n\n".join(lines)
 
 
 def delete_document(document_id: int) -> bool:

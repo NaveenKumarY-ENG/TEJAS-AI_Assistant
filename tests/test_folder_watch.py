@@ -163,3 +163,60 @@ def test_scan_folder_removes_deleted_file(tmp_path):
         assert not any(d["id"] == document_id for d in structured.list_documents())
     finally:
         folder_watch.remove_folder(folder["id"])
+
+
+def test_matches_patterns_include_filters_to_matching_files_only():
+    assert folder_watch._matches_patterns("report.pdf", "*.pdf", "") is True
+    assert folder_watch._matches_patterns("notes.txt", "*.pdf", "") is False
+
+
+def test_matches_patterns_exclude_removes_matching_files():
+    assert folder_watch._matches_patterns("archive/old.txt", "", "archive/*") is False
+    assert folder_watch._matches_patterns("current.txt", "", "archive/*") is True
+
+
+def test_matches_patterns_supports_comma_separated_globs():
+    assert folder_watch._matches_patterns("report.pdf", "*.pdf,*.docx", "") is True
+    assert folder_watch._matches_patterns("report.docx", "*.pdf,*.docx", "") is True
+    assert folder_watch._matches_patterns("report.txt", "*.pdf,*.docx", "") is False
+
+
+def test_matches_patterns_empty_patterns_match_everything():
+    assert folder_watch._matches_patterns("anything.txt", "", "") is True
+
+
+def test_add_folder_with_include_pattern_ingests_only_matching_files(tmp_path):
+    (tmp_path / "keep.pdf.txt").write_text("irrelevant")  # not a real pdf, just proves extension filtering below
+    (tmp_path / "report.txt").write_text("The quarterly figures are strong.")
+    (tmp_path / "scratch.txt").write_text("just some scratch notes")
+
+    folder = folder_watch.add_folder(str(tmp_path), include_pattern="report.*")
+    try:
+        files = _wait_for_scan(folder["id"], expected_count=1)
+        assert len(files) == 1
+        assert files[0]["filepath"].endswith("report.txt")
+    finally:
+        folder_watch.remove_folder(folder["id"])
+
+
+def test_add_folder_with_exclude_pattern_skips_matching_files(tmp_path):
+    (tmp_path / "keep.txt").write_text("Content worth keeping.")
+    (tmp_path / "draft.txt").write_text("A rough draft, not ready yet.")
+
+    folder = folder_watch.add_folder(str(tmp_path), exclude_pattern="draft.*")
+    try:
+        files = _wait_for_scan(folder["id"], expected_count=1)
+        assert len(files) == 1
+        assert files[0]["filepath"].endswith("keep.txt")
+    finally:
+        folder_watch.remove_folder(folder["id"])
+
+
+def test_watched_folder_persists_include_and_exclude_patterns():
+    folder_id = structured.add_watched_folder(r"C:\fake\path\pattern\test", "*.pdf", "archive/*")
+    try:
+        row = structured.get_watched_folder(folder_id)
+        assert row["include_pattern"] == "*.pdf"
+        assert row["exclude_pattern"] == "archive/*"
+    finally:
+        structured.delete_watched_folder(folder_id)
