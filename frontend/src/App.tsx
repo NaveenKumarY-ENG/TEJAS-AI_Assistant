@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen } from "lucide-react";
+import { BookOpen, Radio } from "lucide-react";
 import { Sidebar } from "./components/layout/Sidebar";
 import { TopBar } from "./components/layout/TopBar";
 import { AssistantCore } from "./components/core/AssistantCore";
@@ -13,6 +13,7 @@ import { Toast } from "./components/ui/Toast";
 import { IntroSequence } from "./components/IntroSequence";
 import { VoiceMode } from "./components/voice/VoiceMode";
 import { KnowledgePanel } from "./components/knowledge/KnowledgePanel";
+import { LiveAiPanel } from "./components/liveai/LiveAiPanel";
 import { useAssistantStore } from "./store/assistantStore";
 import { useAssistantSocket } from "./hooks/useAssistantSocket";
 import { useToast } from "./hooks/useToast";
@@ -55,10 +56,19 @@ function Dashboard() {
   // already connected still correctly switches the active voice engine.
   const [ttsAvailable, setTtsAvailable] = useState(false);
   const [ocrAvailable, setOcrAvailable] = useState(false);
+  // Live.AI capability flags — same "read once from /api/meta, default to
+  // the common case" pattern as ttsAvailable/ocrAvailable above.
+  // liveAiEnabled defaults true (LIVE_AI_ENABLED=1 is the default) so the
+  // nav entry doesn't flash in after load for the common case; it only
+  // ever disappears, never appears, once /api/meta actually resolves.
+  const [liveAiEnabled, setLiveAiEnabled] = useState(true);
+  const [browserAvailable, setBrowserAvailable] = useState(false);
+  const [searchConfigured, setSearchConfigured] = useState(false);
   const { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef, speak } =
     useAssistantSocket(ttsAvailable);
   const [voiceModeActive, setVoiceModeActive] = useState(false);
   const [knowledgePanelActive, setKnowledgePanelActive] = useState(false);
+  const [liveAiActive, setLiveAiActive] = useState(false);
   // Lets the hologram (AssistantCore) react live to real mic volume without
   // lifting the whole voice-recording pipeline out of ChatInput — see
   // ChatInput's exposeMicAnalyserRef and AssistantCore's micAnalyserRef docs.
@@ -95,6 +105,9 @@ function Dashboard() {
         setMeta({ assistantName: m.assistant_name, model: m.model, toolCount: m.tools?.length ?? 0 });
         setTtsAvailable(!!m.tts_available);
         setOcrAvailable(!!m.ocr_available);
+        setLiveAiEnabled(m.live_ai_enabled !== false);
+        setBrowserAvailable(!!m.browser_available);
+        setSearchConfigured(!!m.search_configured);
       })
       .catch(() => {});
     fetch("/api/models")
@@ -124,9 +137,21 @@ function Dashboard() {
           onNewChat={startNewChat}
           onEnterVoice={() => setVoiceModeActive(true)}
           voiceModeActive={voiceModeActive}
-          onEnterKnowledge={() => setKnowledgePanelActive(true)}
+          onEnterKnowledge={() => {
+            setKnowledgePanelActive(true);
+            setLiveAiActive(false);
+          }}
           knowledgePanelActive={knowledgePanelActive}
-          onGoHome={() => setKnowledgePanelActive(false)}
+          onEnterLiveAi={() => {
+            setLiveAiActive(true);
+            setKnowledgePanelActive(false);
+          }}
+          liveAiActive={liveAiActive}
+          liveAiEnabled={liveAiEnabled}
+          onGoHome={() => {
+            setKnowledgePanelActive(false);
+            setLiveAiActive(false);
+          }}
           onQuickAction={sendMessage}
           quickActionsDisabled={busy}
         />
@@ -144,12 +169,30 @@ function Dashboard() {
                     title: "Knowledge Base",
                     subtitle: "Upload, organize, and search your documents. TEJAS can read, understand, and answer questions from them.",
                   }
-                : undefined
+                : liveAiActive
+                  ? {
+                      icon: Radio,
+                      title: "Live.AI",
+                      subtitle: "Real-time web search, research, and shopping — Amazon, Flipkart, and beyond.",
+                    }
+                  : undefined
             }
           />
 
           {knowledgePanelActive ? (
             <KnowledgePanel ocrAvailable={ocrAvailable} />
+          ) : liveAiActive ? (
+            <LiveAiPanel
+              onSend={sendMessage}
+              disabled={busy}
+              coreState={coreState}
+              ttsBoundaryRef={ttsBoundaryRef}
+              stopSpeaking={stopSpeaking}
+              onSoonClick={onSoon}
+              onVoiceError={onVoiceError}
+              browserAvailable={browserAvailable}
+              searchConfigured={searchConfigured}
+            />
           ) : (
             <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-5 px-6 pb-6 lg:grid-cols-[1fr_300px]">
               <section

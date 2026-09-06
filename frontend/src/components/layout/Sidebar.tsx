@@ -3,6 +3,7 @@ import {
   SquarePen,
   Mic,
   BookOpen,
+  Radio,
   FolderKanban,
   Zap,
   BarChart3,
@@ -21,6 +22,7 @@ const NAV_ITEMS = [
   { icon: SquarePen, label: "Chats", action: "newChat" as const },
   { icon: Mic, label: "Voice", action: "voice" as const },
   { icon: BookOpen, label: "Knowledge Base", action: "knowledge" as const },
+  { icon: Radio, label: "Live.AI", action: "liveAi" as const },
   { icon: FolderKanban, label: "Projects", soon: true },
   { icon: Zap, label: "Automation", soon: true },
   { icon: BarChart3, label: "Analytics", soon: true },
@@ -34,6 +36,9 @@ export function Sidebar({
   voiceModeActive,
   onEnterKnowledge,
   knowledgePanelActive,
+  onEnterLiveAi,
+  liveAiActive,
+  liveAiEnabled,
   onGoHome,
   onQuickAction,
   quickActionsDisabled,
@@ -44,6 +49,9 @@ export function Sidebar({
   voiceModeActive: boolean;
   onEnterKnowledge: () => void;
   knowledgePanelActive: boolean;
+  onEnterLiveAi: () => void;
+  liveAiActive: boolean;
+  liveAiEnabled: boolean;
   onGoHome: () => void;
   onQuickAction: (q: string) => void;
   quickActionsDisabled: boolean;
@@ -66,15 +74,17 @@ export function Sidebar({
 
       <div className="thin-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-3.5">
         <nav className="space-y-2">
-          {NAV_ITEMS.map((item) => {
+          {NAV_ITEMS.filter((item) => item.action !== "liveAi" || liveAiEnabled).map((item) => {
             const isActive =
               item.label === "Home"
-                ? !voiceModeActive && !knowledgePanelActive
+                ? !voiceModeActive && !knowledgePanelActive && !liveAiActive
                 : item.action === "voice"
                   ? voiceModeActive
                   : item.action === "knowledge"
                     ? knowledgePanelActive
-                    : false;
+                    : item.action === "liveAi"
+                      ? liveAiActive
+                      : false;
             return (
             <button
               key={item.label}
@@ -84,6 +94,7 @@ export function Sidebar({
                 else if (item.action === "newChat") onNewChat();
                 else if (item.action === "voice") onEnterVoice();
                 else if (item.action === "knowledge") onEnterKnowledge();
+                else if (item.action === "liveAi") onEnterLiveAi();
                 else if (item.soon) onSoonClick(item.label);
               }}
               className={`group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-[13px] transition-all ${
