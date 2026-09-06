@@ -16,11 +16,12 @@ from tools.flipkart_tool import ShopFlipkartTool
 
 
 class FakeAnchor:
-    def __init__(self, href, title=None, text="", container_text=""):
+    def __init__(self, href, title=None, text="", container_text="", img_alt=None):
         self._href = href
         self._title = title
         self._text = text
         self._container_text = container_text
+        self._img_alt = img_alt
 
     def get_attribute(self, name):
         if name == "href":
@@ -33,11 +34,21 @@ class FakeAnchor:
         return self._text
 
     def evaluate(self, script):
+        # _extract_results calls a.evaluate() twice with different scripts —
+        # once to read the product image's alt text (its querySelector call
+        # names "img"), once to climb parent levels for price/rating text —
+        # this fake tells them apart the same way the real DOM would return
+        # different things for each, rather than conflating both into one
+        # canned value.
+        if "querySelector('img')" in script:
+            return self._img_alt
         return self._container_text
 
 
-def make_anchor(href="/some-phone/p/itm123", title="Phone X", container_text="₹19,999\n4.3 out of 5 ★"):
-    return FakeAnchor(href=href, title=title, container_text=container_text)
+def make_anchor(
+    href="/some-phone/p/itm123", title="Phone X", container_text="₹19,999\n4.3 out of 5 ★", img_alt=None
+):
+    return FakeAnchor(href=href, title=title, container_text=container_text, img_alt=img_alt)
 
 
 class FakePage:
@@ -81,6 +92,34 @@ def test_extract_results_parses_title_price_rating_link():
             "link": "https://www.flipkart.com/some-phone/p/itm123",
         }
     ]
+
+
+def test_extract_results_prefers_the_product_images_alt_text_over_noisy_anchor_text():
+    """Confirmed live against a real Flipkart search: the anchor's own
+    innerText is polluted with "Bestseller"/"Add to Compare" ahead of the
+    actual title, but the product <img alt="..."> inside it is always the
+    exact clean product name — real markup captured 2026-09."""
+    anchor = FakeAnchor(
+        href="/thing/p/itm1",
+        title=None,
+        text="Bestseller\nAdd to Compare\nSamsung Galaxy F07 (Green, 64 GB)\n4.2 10,069 Ratings",
+        img_alt="Samsung Galaxy F07 (Green, 64 GB)",
+        container_text="",
+    )
+    results = flipkart_tool._extract_results(FakePage([anchor]))
+    assert results[0]["title"] == "Samsung Galaxy F07 (Green, 64 GB)"
+
+
+def test_extract_results_parses_flipkarts_real_glued_rating_shape():
+    """Flipkart glues the rating directly onto its rating-count with no
+    separator — "4.210,069 Ratings & 719 Reviews" — confirmed live; the
+    Amazon-style "4.3 out of 5" shape (already covered by
+    test_extract_results_parses_title_price_rating_link) must also still
+    work."""
+    anchor = make_anchor(container_text="₹11,999\n4.210,069 Ratings & 719 Reviews")
+    results = flipkart_tool._extract_results(FakePage([anchor]))
+    assert results[0]["rating"] == "4.2"
+    assert results[0]["price"] == "₹11,999"
 
 
 def test_extract_results_falls_back_to_anchor_text_when_no_title_attribute():

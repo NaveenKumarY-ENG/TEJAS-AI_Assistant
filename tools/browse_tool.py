@@ -6,6 +6,7 @@ but an amazon.in URL (confirmed by grepping every .goto( call in the
 repo), so "open flipkart.com" (or any other site) had no tool that could
 act on it at all.
 """
+import difflib
 import logging
 import re
 import urllib.parse
@@ -83,8 +84,20 @@ def resolve_url(site: str) -> str:
     if "." in key and " " not in key:
         return f"https://{key}"
 
-    # A bare word with no known alias and no dot -- best-effort a ".com",
-    # same instinct a person types into an address bar.
+    # A likely typo of a known site name ("flipcart" for "flipkart",
+    # confirmed live as a real gap) -- without this, an unrecognized bare
+    # word fell straight through to the generic ".com" guess below
+    # (https://flipcart.com, a real but wrong domain that just fails to
+    # load) instead of the site the user almost certainly meant. A
+    # conservative cutoff only catches genuinely close misspellings, not
+    # just plausible-looking ones -- confirmed it does NOT misfire on an
+    # unrelated bare word like "cnn".
+    close_match = difflib.get_close_matches(key, _SITE_ALIASES.keys(), n=1, cutoff=0.8)
+    if close_match:
+        return f"https://{_SITE_ALIASES[close_match[0]]}"
+
+    # A bare word with no known alias (or close typo of one) and no dot --
+    # best-effort a ".com", same instinct a person types into an address bar.
     slug = re.sub(r"\s+", "", key)
     if not slug:
         raise InvalidWebsite(f"'{site}' isn't a website I can open.")

@@ -23,7 +23,12 @@ logger = logging.getLogger("assistant.flipkart_tool")
 
 _MAX_RESULTS = 10
 _RUPEE_RE = re.compile(r"₹\s?[\d,]+")
-_RATING_RE = re.compile(r"\b[1-5](?:\.\d)?\b(?=\s*(?:★|out of|stars))")
+# Two shapes confirmed live on real Flipkart search-result cards: Amazon-style
+# "4.3 out of 5"/"4.3★", and Flipkart's own actual rendering, a rating glued
+# directly onto its rating-count with no separator — "4.210,069 Ratings & 719
+# Reviews" (that's "4.2" then "10,069" then " Ratings", no space between the
+# rating and the count).
+_RATING_RE = re.compile(r"\b([1-5](?:\.\d)?)\b(?=\s*(?:★|out of|stars))|\b([1-5]\.\d)\d*[\d,]*\s*Ratings")
 
 
 def _parse_price(price_text: str | None) -> float | None:
@@ -82,12 +87,16 @@ def _extract_results(page) -> list[dict]:
     flipkart.com/<slug>/p/<id>...), so extraction anchors on that instead
     of a specific class name.
 
-    NOTE: unlike shopping_tool.py's Amazon selectors (confirmed against a
-    real, live Amazon page), these could not be verified against a live
-    Flipkart page from this environment — if Flipkart's markup has shifted,
-    this may need a live-tuning pass. run() below reports "no_listings"
-    honestly rather than silently returning nothing meaningful if that
-    happens, the same honesty contract shopping_tool.py's Amazon path
+    NOTE: unlike the original version of this function, title/price/rating
+    extraction below WAS confirmed live (a real search for "samsung phone"
+    against the live site) — findings folded in directly: every card's
+    <img alt="..."> inside the product link holds the exact clean product
+    name (confirmed on 6/6 sampled cards; the anchor's own innerText also
+    "works" but is polluted with "Bestseller"/"Add to Compare" noise ahead
+    of the real title), so that's preferred over the anchor's own text.
+    run() below still reports "no_listings" honestly rather than silently
+    returning nothing meaningful if Flipkart's markup shifts again in the
+    future, the same honesty contract shopping_tool.py's Amazon path
     already follows."""
     results = []
     seen_hrefs: set[str] = set()
@@ -98,7 +107,13 @@ def _extract_results(page) -> list[dict]:
         href = a.get_attribute("href")
         if not href or href in seen_hrefs:
             continue
-        title = (a.get_attribute("title") or a.inner_text() or "").strip()
+
+        img_alt = None
+        try:
+            img_alt = a.evaluate("el => { const img = el.querySelector('img'); return img ? img.getAttribute('alt') : null; }")
+        except Exception:
+            pass
+        title = (img_alt or a.get_attribute("title") or a.inner_text() or "").strip()
         if not title:
             continue
         seen_hrefs.add(href)
@@ -117,12 +132,15 @@ def _extract_results(page) -> list[dict]:
 
         price_match = _RUPEE_RE.search(container_text)
         rating_match = _RATING_RE.search(container_text)
+        rating = None
+        if rating_match:
+            rating = rating_match.group(1) or rating_match.group(2)
         link = urllib.parse.urljoin("https://www.flipkart.com", href)
         results.append(
             {
                 "title": title,
                 "price": price_match.group(0) if price_match else None,
-                "rating": rating_match.group(0) if rating_match else None,
+                "rating": rating,
                 "link": link,
             }
         )

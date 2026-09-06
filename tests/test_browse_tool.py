@@ -64,6 +64,19 @@ def test_resolve_url_best_effort_dot_coms_a_bare_unknown_word():
     assert resolve_url("cnn") == "https://cnn.com"
 
 
+def test_resolve_url_tolerates_a_close_typo_of_a_known_alias():
+    """Confirmed live as a real gap: "open flipcart" used to silently
+    resolve to the wrong, nonexistent-ish https://flipcart.com instead of
+    the site the user almost certainly meant."""
+    assert resolve_url("flipcart") == "https://www.flipkart.com"
+    assert resolve_url("youtub") == "https://www.youtube.com"
+    assert resolve_url("amazn") == "https://www.amazon.in"
+
+
+def test_resolve_url_does_not_typo_match_an_unrelated_word():
+    assert resolve_url("cnn") == "https://cnn.com"
+
+
 def test_resolve_url_rejects_empty_input():
     with pytest.raises(InvalidWebsite):
         resolve_url("")

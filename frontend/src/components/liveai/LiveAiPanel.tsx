@@ -6,10 +6,16 @@ import { HOLOGRAM_BACKDROP_STYLE } from "../../utils/hologramBackdrop";
 import { useAssistantStore, type CoreState } from "../../store/assistantStore";
 import type { TtsBoundarySignal } from "../../hooks/useSpeechSynthesis";
 
-// Quick-start prompts for the suggested-action chips — plain text sent
-// through the exact same sendMessage path Sidebar's own Quick Actions
-// already use (see App.tsx's onQuickAction={sendMessage}), not new
-// plumbing.
+// Quick-start prompts for the suggested-action chips. Every one of these is
+// a sentence starter, not a complete question ("Research " on its own has
+// nothing to research) — sending it immediately just makes the model ask
+// "research what?", which is exactly the bug reported live: clicking a chip
+// silently fired an incomplete prompt with no visible feedback. These are
+// dropped into the chat input via the store's pendingInput instead (see
+// ChatInput.tsx's own pendingInput effect), the exact same mechanism
+// Sidebar's QuickActions already uses for its own `autoSend: false` entries
+// ("Quick calculation" etc.) — the user sees the text land in the box,
+// cursor at the end, ready to finish and send themselves.
 const SUGGESTED_ACTIONS: { label: string; prompt: string }[] = [
   { label: "Search the Web", prompt: "Search the web for " },
   { label: "Research", prompt: "Research " },
@@ -53,6 +59,7 @@ export function LiveAiPanel({
   searchConfigured: boolean;
 }) {
   const assistantName = useAssistantStore((s) => s.assistantName);
+  const setPendingInput = useAssistantStore((s) => s.setPendingInput);
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-5 px-6 pb-6 lg:grid-cols-[1fr_300px]">
@@ -92,7 +99,7 @@ export function LiveAiPanel({
                 key={action.label}
                 type="button"
                 disabled={disabled}
-                onClick={() => onSend(action.prompt)}
+                onClick={() => setPendingInput(action.prompt)}
                 className="rounded-full border border-white/[0.08] bg-white/[0.02] px-3 py-1.5 text-[12px] text-white/65 transition-colors hover:border-primary/30 hover:bg-white/[0.05] hover:text-white/90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {action.label}
