@@ -8,6 +8,11 @@ export interface ModelOption {
   provider: string;
   model: string;
   label: string;
+  // GET /api/models already returns this per model (config.py's
+  // AVAILABLE_MODELS) — just wasn't declared here yet. Used by Settings'
+  // AI & Models section (Tool Capability column); ModelSelector.tsx
+  // doesn't need it, so its own display is unaffected by adding this.
+  supports_tools: boolean;
 }
 
 export interface TtsVoiceOption {

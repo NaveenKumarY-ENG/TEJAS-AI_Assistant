@@ -26,7 +26,7 @@ const NAV_ITEMS = [
   { icon: FolderKanban, label: "Projects", soon: true },
   { icon: Zap, label: "Automation", soon: true },
   { icon: BarChart3, label: "Analytics", soon: true },
-  { icon: Settings, label: "Settings", soon: true },
+  { icon: Settings, label: "Settings", action: "settings" as const },
 ];
 
 export function Sidebar({
@@ -39,6 +39,8 @@ export function Sidebar({
   onEnterLiveAi,
   liveAiActive,
   liveAiEnabled,
+  onEnterSettings,
+  settingsActive,
   onGoHome,
   onQuickAction,
   quickActionsDisabled,
@@ -52,6 +54,8 @@ export function Sidebar({
   onEnterLiveAi: () => void;
   liveAiActive: boolean;
   liveAiEnabled: boolean;
+  onEnterSettings: () => void;
+  settingsActive: boolean;
   onGoHome: () => void;
   onQuickAction: (q: string) => void;
   quickActionsDisabled: boolean;
@@ -77,14 +81,16 @@ export function Sidebar({
           {NAV_ITEMS.filter((item) => item.action !== "liveAi" || liveAiEnabled).map((item) => {
             const isActive =
               item.label === "Home"
-                ? !voiceModeActive && !knowledgePanelActive && !liveAiActive
+                ? !voiceModeActive && !knowledgePanelActive && !liveAiActive && !settingsActive
                 : item.action === "voice"
                   ? voiceModeActive
                   : item.action === "knowledge"
                     ? knowledgePanelActive
                     : item.action === "liveAi"
                       ? liveAiActive
-                      : false;
+                      : item.action === "settings"
+                        ? settingsActive
+                        : false;
             return (
             <button
               key={item.label}
@@ -95,6 +101,7 @@ export function Sidebar({
                 else if (item.action === "voice") onEnterVoice();
                 else if (item.action === "knowledge") onEnterKnowledge();
                 else if (item.action === "liveAi") onEnterLiveAi();
+                else if (item.action === "settings") onEnterSettings();
                 else if (item.soon) onSoonClick(item.label);
               }}
               className={`group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-[13px] transition-all ${

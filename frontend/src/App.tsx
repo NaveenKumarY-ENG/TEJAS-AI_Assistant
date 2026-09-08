@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Radio } from "lucide-react";
+import { BookOpen, Radio, Settings as SettingsIcon } from "lucide-react";
 import { Sidebar } from "./components/layout/Sidebar";
 import { TopBar } from "./components/layout/TopBar";
 import { AssistantCore } from "./components/core/AssistantCore";
@@ -14,6 +14,7 @@ import { IntroSequence } from "./components/IntroSequence";
 import { VoiceMode } from "./components/voice/VoiceMode";
 import { KnowledgePanel } from "./components/knowledge/KnowledgePanel";
 import { LiveAiPanel } from "./components/liveai/LiveAiPanel";
+import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { useAssistantStore } from "./store/assistantStore";
 import { useAssistantSocket } from "./hooks/useAssistantSocket";
 import { useToast } from "./hooks/useToast";
@@ -45,6 +46,7 @@ function AmbientBackdrop() {
 function Dashboard() {
   const coreState = useAssistantStore((s) => s.coreState);
   const assistantName = useAssistantStore((s) => s.assistantName);
+  const toolCount = useAssistantStore((s) => s.toolCount);
   const setMeta = useAssistantStore((s) => s.setMeta);
   const setModels = useAssistantStore((s) => s.setModels);
   const setTtsVoices = useAssistantStore((s) => s.setTtsVoices);
@@ -64,11 +66,16 @@ function Dashboard() {
   const [liveAiEnabled, setLiveAiEnabled] = useState(true);
   const [browserAvailable, setBrowserAvailable] = useState(false);
   const [searchConfigured, setSearchConfigured] = useState(false);
+  // Settings' Privacy & Data / AI & Models sections — same pattern as the
+  // flags above, just two more booleans off the same /api/meta fetch.
+  const [anthropicConfigured, setAnthropicConfigured] = useState(false);
+  const [geminiConfigured, setGeminiConfigured] = useState(false);
   const { sendMessage, startNewChat, openSession, stopSpeaking, ttsBoundaryRef, speak } =
     useAssistantSocket(ttsAvailable);
   const [voiceModeActive, setVoiceModeActive] = useState(false);
   const [knowledgePanelActive, setKnowledgePanelActive] = useState(false);
   const [liveAiActive, setLiveAiActive] = useState(false);
+  const [settingsActive, setSettingsActive] = useState(false);
   // Lets the hologram (AssistantCore) react live to real mic volume without
   // lifting the whole voice-recording pipeline out of ChatInput — see
   // ChatInput's exposeMicAnalyserRef and AssistantCore's micAnalyserRef docs.
@@ -108,6 +115,8 @@ function Dashboard() {
         setLiveAiEnabled(m.live_ai_enabled !== false);
         setBrowserAvailable(!!m.browser_available);
         setSearchConfigured(!!m.search_configured);
+        setAnthropicConfigured(!!m.anthropic_configured);
+        setGeminiConfigured(!!m.gemini_configured);
       })
       .catch(() => {});
     fetch("/api/models")
@@ -140,17 +149,26 @@ function Dashboard() {
           onEnterKnowledge={() => {
             setKnowledgePanelActive(true);
             setLiveAiActive(false);
+            setSettingsActive(false);
           }}
           knowledgePanelActive={knowledgePanelActive}
           onEnterLiveAi={() => {
             setLiveAiActive(true);
             setKnowledgePanelActive(false);
+            setSettingsActive(false);
           }}
           liveAiActive={liveAiActive}
           liveAiEnabled={liveAiEnabled}
+          onEnterSettings={() => {
+            setSettingsActive(true);
+            setKnowledgePanelActive(false);
+            setLiveAiActive(false);
+          }}
+          settingsActive={settingsActive}
           onGoHome={() => {
             setKnowledgePanelActive(false);
             setLiveAiActive(false);
+            setSettingsActive(false);
           }}
           onQuickAction={sendMessage}
           quickActionsDisabled={busy}
@@ -175,7 +193,13 @@ function Dashboard() {
                       title: "Live.AI",
                       subtitle: "Real-time web search, research, and shopping — Amazon, Flipkart, and beyond.",
                     }
-                  : undefined
+                  : settingsActive
+                    ? {
+                        icon: SettingsIcon,
+                        title: "Settings",
+                        subtitle: "See how TEJAS is configured, and switch models or voices.",
+                      }
+                    : undefined
             }
           />
 
@@ -192,6 +216,19 @@ function Dashboard() {
               onVoiceError={onVoiceError}
               browserAvailable={browserAvailable}
               searchConfigured={searchConfigured}
+            />
+          ) : settingsActive ? (
+            <SettingsPanel
+              assistantName={assistantName}
+              toolCount={toolCount}
+              ttsAvailable={ttsAvailable}
+              ocrAvailable={ocrAvailable}
+              browserAvailable={browserAvailable}
+              searchConfigured={searchConfigured}
+              liveAiEnabled={liveAiEnabled}
+              anthropicConfigured={anthropicConfigured}
+              geminiConfigured={geminiConfigured}
+              onModelError={onModelError}
             />
           ) : (
             <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-5 px-6 pb-6 lg:grid-cols-[1fr_300px]">
