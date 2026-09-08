@@ -17,6 +17,7 @@ is missing, "/" now returns a clear error instead of a different UI.
 import asyncio
 import json
 import logging
+import logging.handlers
 import os
 import subprocess
 import sys
@@ -32,16 +33,34 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agent import Agent, transcription, tts
-from config import AVAILABLE_MODELS, AVAILABLE_TTS_VOICES, config
+from config import AVAILABLE_MODELS, AVAILABLE_TTS_VOICES, DATA_DIR, config
 from integrations import browser
 from memory import folder_watch, knowledge, ocr, structured
 from tools import ALL_TOOLS
 from tools.web_search import _looks_unconfigured
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
+
+# A persistent, rotating log file alongside the console output above —
+# logging.basicConfig only writes to the console, which is gone the moment
+# that terminal's scrollback is cleared or closed. Every logger.exception/
+# logger.warning call in this codebase already captures the real, specific
+# failure detail (e.g. integrations/browser.py's relaunch warnings, every
+# browser-driven tool's own logger.exception on a real error) — without
+# this, that detail was unrecoverable after the fact, which is exactly why
+# diagnosing a live-reported bug has repeatedly meant trying to reproduce
+# it live rather than just reading what actually happened. Capped size +
+# a couple of backups (RotatingFileHandler, stdlib, no new dependency) so
+# it can never grow unbounded.
+_log_dir = DATA_DIR / "logs"
+_log_dir.mkdir(exist_ok=True, parents=True)
+_file_handler = logging.handlers.RotatingFileHandler(
+    _log_dir / "tejas.log", maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
 )
+_file_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+logging.getLogger().addHandler(_file_handler)
+
 logger = logging.getLogger("assistant.server")
 
 app = FastAPI(title=f"{config.assistant_name} API")

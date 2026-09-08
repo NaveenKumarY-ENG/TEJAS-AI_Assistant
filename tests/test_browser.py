@@ -1,7 +1,8 @@
 """
 Tests for integrations/browser.py's new_page() — the auto-heal-on-a-closed-
-browser logic. No real Playwright involved; fakes stand in for the
-sync_playwright()/BrowserContext objects.
+browser retry-with-backoff logic. No real Playwright involved; fakes stand
+in for the sync_playwright()/BrowserContext objects, and time.sleep is
+patched out so the suite doesn't actually pause between retries.
 """
 import sys
 from pathlib import Path
@@ -23,6 +24,16 @@ def _reset_singleton():
     yield
     browser._context = None
     browser._playwright = None
+
+
+@pytest.fixture(autouse=True)
+def mock_sleep():
+    """new_page() pauses _RELAUNCH_DELAY_SECONDS between retry attempts —
+    real in production, pure waste in a test suite. Patched out globally
+    here rather than per-test; tests that care how many times it was
+    called take this fixture as a parameter."""
+    with patch.object(browser.time, "sleep") as m:
+        yield m
 
 
 class FakePlaywrightHandle:
@@ -56,7 +67,7 @@ def test_new_page_returns_a_page_from_a_healthy_context():
     mock_get_context.assert_called_once()
 
 
-def test_new_page_relaunches_once_when_the_context_was_closed():
+def test_new_page_relaunches_when_the_context_was_closed():
     """The core regression this exists for: a real browser window closed
     manually (or crashed) leaves _context pointing at a dead context —
     new_page() must detect the failure, reset the singleton, and get a
@@ -85,15 +96,53 @@ def test_new_page_relaunches_once_when_the_context_was_closed():
     assert fake_playwright_handle.stopped is True
 
 
-def test_new_page_propagates_when_the_relaunch_also_fails():
-    """No infinite retry, no silent swallow — a second real failure (not
-    just a stale singleton) must still surface to the caller."""
+def test_new_page_retries_more_than_once_before_giving_up(mock_sleep):
+    """Regression test for the actual gap in the previous (single-retry)
+    version: a still-tearing-down old browser process can plausibly still
+    be holding its profile lock on the very next attempt too — new_page()
+    must survive that by trying more than twice, with a pause between."""
+    dying_context = FakeContext(RuntimeError("profile lock still held"))
+    with patch.object(browser, "get_context", return_value=dying_context):
+        with pytest.raises(RuntimeError, match="profile lock still held"):
+            browser.new_page()
+
+    assert dying_context.new_page_calls == browser._RELAUNCH_ATTEMPTS
+    # A pause between every attempt except the last one.
+    assert mock_sleep.call_count == browser._RELAUNCH_ATTEMPTS - 1
+
+
+def test_new_page_succeeds_on_the_final_attempt():
+    """Fails twice, then a relaunch on the third attempt finally works —
+    confirms the retry loop doesn't give up early."""
+    attempts = [
+        FakeContext(RuntimeError("still locked")),
+        FakeContext(RuntimeError("still locked")),
+        FakeContext(object()),
+    ]
+    assert browser._RELAUNCH_ATTEMPTS == len(attempts)
+    call_count = {"n": 0}
+
+    def fake_get_context():
+        result = attempts[call_count["n"]]
+        call_count["n"] += 1
+        return result
+
+    with patch.object(browser, "get_context", side_effect=fake_get_context):
+        result = browser.new_page()
+
+    assert result is attempts[-1]._page_or_error
+    assert all(c.new_page_calls == 1 for c in attempts)
+
+
+def test_new_page_propagates_the_last_error_when_every_attempt_fails():
+    """No infinite retry, no silent swallow — a persistent real failure
+    (not just a transiently stale singleton) must still surface to the
+    caller after exhausting all attempts."""
     dead_context = FakeContext(RuntimeError("still dead"))
     with patch.object(browser, "get_context", return_value=dead_context):
         with pytest.raises(RuntimeError, match="still dead"):
             browser.new_page()
-    # Called once for the initial attempt, once for the retry after reset.
-    assert dead_context.new_page_calls == 2
+    assert dead_context.new_page_calls == browser._RELAUNCH_ATTEMPTS
 
 
 def test_new_page_tolerates_playwright_stop_itself_raising():

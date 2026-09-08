@@ -19,6 +19,7 @@ instead.
 """
 import logging
 import threading
+import time
 from pathlib import Path
 
 from config import DATA_DIR
@@ -31,6 +32,20 @@ _context_lock = threading.Lock()
 
 _availability_cache: bool | None = None
 _availability_lock = threading.Lock()
+
+# How many times new_page() will relaunch-and-retry after the browser looks
+# closed, and how long it waits between attempts. Not just one immediate
+# retry: confirmed live (a real lockfile found sitting in
+# data/browser_profile/, timestamped alongside the profile's other
+# most-recently-touched files) that Chromium's own profile-singleton lock
+# can still be held for a moment after the user closes the visible window —
+# a multi-process browser tears its subprocesses down in sequence, not
+# instantly, and on Windows a file handle can outlive the window closing by
+# a beat. A relaunch attempted with zero delay can race that teardown and
+# fail even though the old browser really is on its way out; a short pause
+# between attempts gives it time to actually finish.
+_RELAUNCH_ATTEMPTS = 3
+_RELAUNCH_DELAY_SECONDS = 1.5
 
 
 def get_context():
@@ -93,25 +108,38 @@ def new_page():
 
     Relaunching reuses the same on-disk profile_dir get_context() already
     points at, so this does NOT lose Amazon login state — it's persisted
-    to disk, not held only in the dead process's memory. One retry only,
-    same conservative "retry once" pattern already used elsewhere in this
-    codebase (e.g. tools/cart_tool.py's delete-confirm retry) — a second
-    real failure propagates normally to the caller's own except clause."""
+    to disk, not held only in the dead process's memory. Retries up to
+    _RELAUNCH_ATTEMPTS times with a short pause between (see that
+    constant's own comment for why a single zero-delay retry wasn't
+    enough) — a failure on every attempt propagates normally to the
+    caller's own except clause, same "don't silently swallow a real
+    failure" contract as everywhere else in this codebase."""
     global _playwright, _context
-    context = get_context()
-    try:
-        return context.new_page()
-    except Exception:
-        logger.warning("Browser context looks closed (window closed manually?) — relaunching")
-        with _context_lock:
-            _context = None
-            if _playwright is not None:
-                try:
-                    _playwright.stop()
-                except Exception:
-                    pass
-                _playwright = None
-        return get_context().new_page()
+    last_error: Exception | None = None
+    for attempt in range(_RELAUNCH_ATTEMPTS):
+        context = get_context()
+        try:
+            return context.new_page()
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "Browser context looks closed (attempt %d/%d) — relaunching: %s",
+                attempt + 1,
+                _RELAUNCH_ATTEMPTS,
+                e,
+            )
+            with _context_lock:
+                _context = None
+                if _playwright is not None:
+                    try:
+                        _playwright.stop()
+                    except Exception:
+                        pass
+                    _playwright = None
+            if attempt < _RELAUNCH_ATTEMPTS - 1:
+                time.sleep(_RELAUNCH_DELAY_SECONDS)
+    assert last_error is not None  # the loop only exits early via `return`
+    raise last_error
 
 
 def _compute_availability() -> bool:
