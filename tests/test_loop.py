@@ -9,7 +9,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agent.loop import Agent, _is_cart_request_query, _is_knowledge_listing_query, _is_reminder_query, _is_volatile_query
+from agent.loop import (
+    Agent,
+    _is_cart_request_query,
+    _is_explicit_web_query,
+    _is_knowledge_listing_query,
+    _is_reminder_query,
+    _is_volatile_query,
+)
 
 
 def test_is_volatile_query_detects_time_and_weather_questions():
@@ -92,6 +99,30 @@ def test_is_cart_request_query_ignores_ambiguous_purchase_phrasing():
     assert not _is_cart_request_query("how much is in my shopping cart")
 
 
+def test_is_explicit_web_query_detects_real_reported_phrasing():
+    """Confirmed live: "Search the web for best AIML courses" pulled in
+    the user's own unrelated "AIML.pdf" as ambient knowledge-base context
+    purely on a keyword coincidence, visibly confusing a 7B local model
+    into trying to read the local document as if it were a web page."""
+    assert _is_explicit_web_query("Search the web for best AIML courses")
+    assert _is_explicit_web_query("Search the web for best AIML courses available on internet")
+    assert _is_explicit_web_query("look up the latest iPhone price online")
+    assert _is_explicit_web_query("find this on google")
+    assert _is_explicit_web_query("can you research this on the internet")
+    assert _is_explicit_web_query("what's the answer available on internet")
+
+
+def test_is_explicit_web_query_ignores_unrelated_questions():
+    """Deliberately narrow — a plain question with no web/internet/google
+    wording must still go through the normal ambient knowledge-base path,
+    not skip it just because it happens to contain "search" or "find" on
+    their own (e.g. "find my report.pdf" should still search the KB)."""
+    assert not _is_explicit_web_query("what does AIML.pdf cover")
+    assert not _is_explicit_web_query("find my report.pdf")
+    assert not _is_explicit_web_query("what's a good pizza topping")
+    assert not _is_explicit_web_query("explain how neural networks work")
+
+
 def _make_agent() -> Agent:
     return Agent()  # no session_id/resume -> fresh in-memory session, no real history to load
 
@@ -118,6 +149,27 @@ def test_messages_for_llm_omits_knowledge_section_when_nothing_relevant():
         messages, kb_results = agent._messages_for_llm("what's a good pizza topping")
     assert kb_results == []
     assert "Relevant content from the knowledge base" not in messages[-1]["content"]
+
+
+def test_messages_for_llm_skips_knowledge_base_for_explicit_web_queries():
+    """The actual regression test for the live-reported bug: even when the
+    knowledge base genuinely WOULD return something relevant (here, mocked
+    exactly like the real "AIML.pdf" coincidentally matching "best AIML
+    courses" did), an explicit "search the web" request must skip it
+    entirely — knowledge.search() must not even be called — rather than
+    injecting a contradictory second source for a 7B model to get confused
+    between."""
+    fake_results = [{"filename": "AIML.pdf", "text": "AIML stands for Artificial Intelligence and Machine Learning."}]
+    with patch("agent.loop.knowledge.search", return_value=fake_results) as mock_search, patch(
+        "agent.loop.knowledge.document_listing", return_value="- AIML.pdf"
+    ):
+        agent = _make_agent()
+        messages, kb_results = agent._messages_for_llm("Search the web for best AIML courses")
+    mock_search.assert_not_called()
+    assert kb_results == []
+    assert "Relevant content from the knowledge base" not in messages[-1]["content"]
+    assert "Documents currently in the knowledge base" not in messages[-1]["content"]
+    assert "explicitly asks for a live web search" in messages[-1]["content"]
 
 
 def test_messages_for_llm_uses_format_search_results_for_the_injected_text():

@@ -137,6 +137,33 @@ def _is_cart_request_query(text: str) -> bool:
     return bool(_CART_REQUEST_RE.search(text))
 
 
+# Confirmed live: "Search the web for best AIML courses" pulled in the
+# user's own uploaded "AIML.pdf" as ambient knowledge-base context (see
+# _messages_for_llm below) purely on a keyword/topic coincidence — the
+# filename/content happened to overlap "AIML" with the query — even though
+# the user explicitly said "the web," not "my documents." A 7B local model
+# then got visibly confused between the two sources, ending up trying to
+# read the local document as if it were a web page instead of just
+# answering from web_search. knowledge.search()'s relevance threshold has
+# no way to know the user's INTENT was "the open internet, not my own
+# files" — it can only judge topical/keyword similarity, so a document
+# that's genuinely about a similar topic (or just similarly named) will
+# keep passing that threshold regardless. When the user's own words make
+# that intent this explicit, skip the ambient knowledge-base injection for
+# the turn entirely rather than hoping the model sorts out two contradictory
+# sources on its own — same "an explicit signal beats hoping the model
+# ignores irrelevant ambient context" reasoning as every regex above.
+_EXPLICIT_WEB_QUERY_RE = re.compile(
+    r"\b(?:search|look\s*up|find|research)\b.{0,40}\b(?:the\s+)?(?:web|internet|online|google)\b"
+    r"|\bon\s+(?:the\s+)?internet\b",
+    re.IGNORECASE,
+)
+
+
+def _is_explicit_web_query(text: str) -> bool:
+    return bool(_EXPLICIT_WEB_QUERY_RE.search(text))
+
+
 class Agent:
     def __init__(self, session_id: int | None = None, resume: bool = False):
         """
@@ -215,18 +242,28 @@ class Agent:
         chat_streaming can fire on_tool/on_tool_result for the citation UI
         even though nothing "called" search_knowledge this turn.
 
-        Knowledge-base search runs unconditionally every turn, exactly like
-        vector.recall() below — not gated on any regex heuristic. An
-        earlier version of this only searched when the message looked like
-        it named a specific file, and separately just *asked* the model to
-        call search_knowledge as a tool when it did — both were confirmed
-        live, repeatedly, to be unreliable on a 7B local model: it would
-        still sometimes skip the tool call and fabricate a "couldn't find
-        anything" answer. Never leaving that decision to the model at all
-        (same reasoning that already applies to memory recall — the model
-        doesn't "decide" to remember things either) is the actual fix.
-        knowledge.search()'s own relevance threshold means an unrelated turn
-        just gets nothing injected, same as vector.recall() returning [].
+        Knowledge-base search runs every turn by default, exactly like
+        vector.recall() below — not left to the model to decide whether to
+        call search_knowledge itself. An earlier version of this only
+        searched when the message looked like it named a specific file, and
+        separately just *asked* the model to call search_knowledge as a
+        tool when it did — both were confirmed live, repeatedly, to be
+        unreliable on a 7B local model: it would still sometimes skip the
+        tool call and fabricate a "couldn't find anything" answer. Never
+        leaving that decision to the model at all (same reasoning that
+        already applies to memory recall — the model doesn't "decide" to
+        remember things either) is the actual fix. knowledge.search()'s own
+        relevance threshold means an unrelated turn just gets nothing
+        injected, same as vector.recall() returning [].
+
+        The one deliberate exception: _is_explicit_web_query below skips
+        this injection entirely when the user's own words make it clear
+        they want the open internet, not their own files ("search the
+        web...") — confirmed live that an unrelated document can still pass
+        knowledge.search()'s relevance threshold on a topical/keyword
+        coincidence (a document literally named "AIML.pdf" for a "best AIML
+        courses" web query), and a 7B model gets visibly confused between
+        two contradictory sources it was never asked to reconcile.
         """
         parts = [config.current_time_context()]
 
@@ -259,11 +296,25 @@ class Agent:
                 "plainly rather than substituting your own recommendation for it."
             )
 
-        listing = knowledge.document_listing()
+        explicit_web_query = _is_explicit_web_query(user_input)
+        if explicit_web_query:
+            # See _EXPLICIT_WEB_QUERY_RE's comment — reinforced right next
+            # to the user's own message, same pattern as the cart-request
+            # instruction above, for the same reason: a 7B model following
+            # a rule buried in the (cached, rarely re-attended-to) static
+            # system prompt alone wasn't reliable enough on its own.
+            parts.append(
+                "This message explicitly asks for a live web search, not the user's own "
+                "uploaded documents. Call web_search now and answer from those results. Do NOT "
+                "call search_knowledge or treat any knowledge-base document as the answer here, "
+                "even if one happens to share a similar-looking name or topic with the query."
+            )
+
+        listing = knowledge.document_listing() if not explicit_web_query else None
         if listing:
             parts.append("Documents currently in the knowledge base (for reference — use search_knowledge or the content below for details on any of them):\n" + listing)
 
-        kb_results = knowledge.search(user_input, n_results=3)
+        kb_results = knowledge.search(user_input, n_results=3) if not explicit_web_query else []
         if kb_results:
             parts.append(
                 "Relevant content from the knowledge base:\n" + knowledge.format_search_results(kb_results)
