@@ -215,8 +215,7 @@ class ViewCartTool(Tool):
                 "(see README.md's Setup section) to enable this."
             )
         try:
-            context = browser.get_context()
-            page = context.new_page()
+            page = browser.new_page()
             page.goto("https://www.amazon.in/gp/cart/view.html", wait_until="domcontentloaded")
             page.bring_to_front()
 
@@ -306,8 +305,7 @@ class RemoveFromCartTool(Tool):
         if not product_name and not product_url:
             return "I need either the product's name or its exact link to know what to remove."
         try:
-            context = browser.get_context()
-            page = context.new_page()
+            page = browser.new_page()
             page.goto("https://www.amazon.in/gp/cart/view.html", wait_until="domcontentloaded")
             page.bring_to_front()
 

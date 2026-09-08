@@ -265,8 +265,7 @@ def search_products(query: str, min_price: float | None = None, max_price: float
     order_tool.py reimplementing its own weaker version of it. Raises on a
     genuine navigation/setup failure — left to the caller to catch, same as
     any other browser call in this codebase."""
-    context = browser.get_context()
-    page = context.new_page()
+    page = browser.new_page()
     url = f"https://www.amazon.in/s?k={urllib.parse.quote(query)}"
     price_param = _price_range_param(min_price, max_price)
     if price_param:
@@ -359,8 +358,7 @@ class ShopAmazonTool(Tool):
                 # have changed its layout" — a misleading error for a case
                 # where nothing was actually wrong, the user just wanted to
                 # browse rather than search).
-                context = browser.get_context()
-                page = context.new_page()
+                page = browser.new_page()
                 page.goto("https://www.amazon.in", wait_until="domcontentloaded")
                 page.bring_to_front()
                 return "Opened Amazon.in for you — browse in the window, or tell me what to search for."

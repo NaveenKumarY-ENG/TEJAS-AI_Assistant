@@ -73,6 +73,47 @@ def get_context():
     return _context
 
 
+def new_page():
+    """Returns a new tab in the shared persistent browser context —
+    relaunching the browser automatically if it was closed since the last
+    call, instead of every tool call failing forever until the whole
+    server is restarted. This is what every tool in tools/ should call
+    instead of get_context().new_page() directly (all of them immediately
+    open a page and do nothing else with the raw context).
+
+    Confirmed live as a real, recurring failure: launch_persistent_context
+    above opens a real, visible window with no "keep running after the
+    last window closes" flag, so Chromium's own default behavior is to
+    exit the whole browser process once the user closes that window
+    manually — but the cached _context singleton above has no way to know
+    that happened on its own, so every subsequent
+    get_context().new_page() call raised (Playwright's own
+    "has been closed" error) with no recovery, only masked as a generic
+    tool failure by whichever tool happened to call it.
+
+    Relaunching reuses the same on-disk profile_dir get_context() already
+    points at, so this does NOT lose Amazon login state — it's persisted
+    to disk, not held only in the dead process's memory. One retry only,
+    same conservative "retry once" pattern already used elsewhere in this
+    codebase (e.g. tools/cart_tool.py's delete-confirm retry) — a second
+    real failure propagates normally to the caller's own except clause."""
+    global _playwright, _context
+    context = get_context()
+    try:
+        return context.new_page()
+    except Exception:
+        logger.warning("Browser context looks closed (window closed manually?) — relaunching")
+        with _context_lock:
+            _context = None
+            if _playwright is not None:
+                try:
+                    _playwright.stop()
+                except Exception:
+                    pass
+                _playwright = None
+        return get_context().new_page()
+
+
 def _compute_availability() -> bool:
     try:
         from playwright.sync_api import sync_playwright

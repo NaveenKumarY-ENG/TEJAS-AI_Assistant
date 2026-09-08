@@ -137,8 +137,7 @@ class OpenWebsiteTool(Tool):
         except InvalidWebsite as e:
             return str(e)
         try:
-            context = browser.get_context()
-            page = context.new_page()
+            page = browser.new_page()
             page.goto(url, wait_until="domcontentloaded")
             page.bring_to_front()
             return f"Opened {url} for you in a browser window."

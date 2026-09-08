@@ -330,8 +330,7 @@ class OrderAmazonTool(Tool):
                         "I won't substitute a different variant without you confirming."
                     )
 
-            context = browser.get_context()
-            page = context.new_page()
+            page = browser.new_page()
             page.goto(product_url, wait_until="domcontentloaded")
             page.bring_to_front()
 

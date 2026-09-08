@@ -156,8 +156,7 @@ def search_products(query: str, min_price: float | None = None, max_price: float
       - {"no_listings": True} if nothing could be extracted from the page
     Raises on a genuine navigation/setup failure, left to the caller to
     catch, same as every other browser call in this codebase."""
-    context = browser.get_context()
-    page = context.new_page()
+    page = browser.new_page()
     page.goto(f"https://www.flipkart.com/search?q={urllib.parse.quote(query)}", wait_until="domcontentloaded")
     page.bring_to_front()
 
@@ -234,8 +233,7 @@ class ShopFlipkartTool(Tool):
             return f"That price range doesn't make sense (₹{min_price:g} to ₹{max_price:g}) — the minimum is higher than the maximum."
         try:
             if not query:
-                context = browser.get_context()
-                page = context.new_page()
+                page = browser.new_page()
                 page.goto("https://www.flipkart.com", wait_until="domcontentloaded")
                 page.bring_to_front()
                 return "Opened Flipkart for you — browse in the window, or tell me what to search for."
