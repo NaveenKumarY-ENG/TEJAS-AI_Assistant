@@ -19,6 +19,8 @@ import json
 import logging
 import logging.handlers
 import os
+import platform
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -35,7 +37,7 @@ from pydantic import BaseModel
 from agent import Agent, transcription, tts
 from config import AVAILABLE_MODELS, AVAILABLE_TTS_VOICES, DATA_DIR, config
 from integrations import browser
-from memory import folder_watch, knowledge, ocr, structured
+from memory import folder_watch, knowledge, ocr, structured, vector
 from tools import ALL_TOOLS
 from tools.web_search import _looks_unconfigured
 
@@ -265,6 +267,50 @@ async def meta():
         "live_ai_enabled": config.live_ai_enabled,
         "browser_available": browser_available,
         "search_configured": not _looks_unconfigured(config.search_api_key),
+        # Settings' Privacy & Data / AI & Models sections — same boolean-only,
+        # never-the-key-itself pattern as search_configured above, reused
+        # for the other two cloud providers. frontend/src/components/
+        # settings/SettingsPanel.tsx is the only new consumer.
+        "anthropic_configured": not _looks_unconfigured(config.anthropic_api_key),
+        "gemini_configured": not _looks_unconfigured(config.gemini_api_key),
+    }
+
+
+@app.get("/api/system/health")
+async def system_health():
+    """Read-only system diagnostics for Settings' System section
+    (frontend/src/components/settings/SettingsPanel.tsx). Deliberately
+    checks only the two things nothing else in this app already reports on
+    — SQLite and ChromaDB — everything else (LLM/TTS/OCR/WebSocket) is
+    already known from /api/meta or the live store, so isn't duplicated
+    here. No embeddings, no LLM calls, no writes — a real failure here
+    reports "unavailable" rather than crashing the endpoint or the app,
+    same defensive shape /api/meta already uses for tts_available/
+    ocr_available/browser_available."""
+    db_status = "unknown"
+    try:
+        with sqlite3.connect(config.sqlite_path, timeout=2) as conn:
+            conn.execute("SELECT 1")
+        db_status = "ok"
+    except Exception:
+        logger.exception("SQLite health check failed")
+        db_status = "unavailable"
+
+    vector_status = "unknown"
+    try:
+        # heartbeat() is ChromaDB's own cheap liveness check (returns a
+        # nanosecond timestamp) — no embeddings, no query, no write.
+        vector.get_client().heartbeat()
+        vector_status = "ok"
+    except Exception:
+        logger.exception("ChromaDB health check failed")
+        vector_status = "unavailable"
+
+    return {
+        "status": "ok" if db_status == "ok" and vector_status == "ok" else "degraded",
+        "database": db_status,
+        "vector_store": vector_status,
+        "python_version": platform.python_version(),
     }
 
 
