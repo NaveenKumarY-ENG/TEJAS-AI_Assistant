@@ -113,11 +113,20 @@ function ToggleSwitch({ on, onClick, label }: { on: boolean; onClick: () => void
       aria-checked={on}
       aria-label={label}
       onClick={onClick}
-      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${on ? "bg-primary" : "bg-white/15"}`}
+      // border-0 p-0: without these, the browser's default <button> border/
+      // padding shifts the knob span's "static position" (the fallback an
+      // absolutely-positioned element uses when left/right aren't set) —
+      // confirmed live as a real bug: the knob rendered well outside the
+      // track, off to the right, because it inherited that default padding
+      // instead of sitting flush at the track's edge.
+      className={`relative h-6 w-11 shrink-0 rounded-full border-0 p-0 transition-colors ${on ? "bg-primary" : "bg-white/15"}`}
     >
       <span
-        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
-          on ? "translate-x-[22px]" : "translate-x-0.5"
+        // left-2px (not left-auto/default) is the actual fix above — an
+        // explicit base offset the translate below then shifts from,
+        // rather than relying on the button's own (now-zeroed) padding.
+        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
+          on ? "translate-x-[22px]" : "translate-x-0"
         }`}
       />
     </button>
