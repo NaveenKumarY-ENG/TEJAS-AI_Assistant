@@ -497,6 +497,42 @@ def test_search_finds_document_by_filename_alone_even_with_no_semantic_overlap()
         knowledge.delete_document(doc["id"])
 
 
+def test_search_finds_document_by_filename_stem_without_the_extension():
+    """Regression test for a real, live-reproduced bug: searching a real
+    knowledge base containing "AIML.pdf" for just "AIML" — the natural,
+    extension-less way anyone actually refers to a document, nobody types
+    ".pdf" when asking about a file — returned "No matches" even though the
+    query names the document as precisely as a full filename would, because
+    the filename-mention bypass required the literal ".pdf" too. The
+    document's own body text never uses the word "AIML" (it spells out
+    "Artificial Intelligence and Machine Learning"), so this can only be
+    fixed by the filename-stem match, not by keyword overlap. Uses a .txt
+    file here (not a real .pdf) purely so ingestion doesn't need real PDF
+    binary bytes — the filename-stem logic under test doesn't care about
+    file type."""
+    doc = knowledge.ingest_document(
+        "AIML.txt",
+        b"Fundamentals of Artificial Intelligence and Machine Learning. Understanding the Core Concepts.",
+    )
+    try:
+        results = knowledge.search("AIML")
+        assert any(r["filename"] == "AIML.txt" for r in results)
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_search_filename_stem_match_is_guarded_to_three_characters_minimum():
+    """A trivially short stem must not match on any coincidental short
+    fragment of the query — same anti-false-positive guard as the keyword-
+    overlap floor above."""
+    doc = knowledge.ingest_document("ab.txt", b"Completely unrelated content about gardening tips.")
+    try:
+        results = knowledge.search("please tell me about your favorite car brands")
+        assert not any(r["filename"] == "ab.txt" for r in results)
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
 def test_search_filename_mention_does_not_suppress_genuinely_irrelevant_documents():
     """The filename exemption is per-document, not global — mentioning one
     document's filename shouldn't make an unrelated document's content
@@ -706,6 +742,42 @@ def test_search_finds_exact_term_via_keyword_overlap_even_beyond_distance_thresh
     try:
         results = knowledge.search("What is the replacement part code QRX-88214-ALPHA?")
         assert any("QRX-88214-ALPHA" in r["text"] for r in results)
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_search_finds_a_single_distinctive_word_via_keyword_overlap():
+    """Regression test for a real, live-reproduced bug: _keyword_overlap_hit
+    had a hard floor of 2 matched words, which is unreachable for ANY
+    single-word query no matter how exact the match — searching a real
+    knowledge base containing "AIML.pdf" for the single word "AIML"
+    returned "No matches" even though the acronym appears verbatim in the
+    document, because a 1-word query can never contain 2 matched words."""
+    doc = knowledge.ingest_document(
+        "acronym_doc.txt",
+        b"This course covers the fundamentals of AIML, a field combining statistics and computing.",
+    )
+    try:
+        results = knowledge.search("AIML")
+        assert any("AIML" in r["text"] for r in results)
+    finally:
+        knowledge.delete_document(doc["id"])
+
+
+def test_search_still_requires_two_words_for_longer_queries():
+    """The fix above must not weaken the original anti-false-positive
+    intent for multi-word queries — a single coincidentally shared word
+    still isn't enough on its own when the query has more words to check."""
+    doc = knowledge.ingest_document(
+        "unrelated_doc.txt",
+        b"The quarterly report shows revenue increased significantly across all regions this year.",
+    )
+    try:
+        # Shares only "report" with the document above — must not match on
+        # that single coincidental word alone (distance threshold also
+        # unlikely to pass for such an unrelated topic).
+        results = knowledge.search("Please generate a status report for my homework assignment")
+        assert not any("quarterly report" in r["text"] for r in results)
     finally:
         knowledge.delete_document(doc["id"])
 

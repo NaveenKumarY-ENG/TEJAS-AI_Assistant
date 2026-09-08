@@ -217,6 +217,30 @@ def test_gemini_multiple_tool_calls_in_one_turn_fold_into_one_content():
     assert "get_system_info" in text and "500GB free" in text
 
 
+def test_gemini_continue_nudge_tells_the_model_to_stop_and_answer():
+    """Regression test for a real, live-reproduced bug: a bare "Please
+    continue." nudge made gemini-3.6-flash re-call the SAME tool with the
+    SAME arguments over and over — confirmed via the actual SQLite-
+    persisted history, every single one of 8 iterations' execute_python
+    result was already the correct answer (178377), the model just never
+    stopped to say so. "Please continue" reads as "keep taking actions" to
+    a tool-calling model right when it needs the opposite instruction. The
+    nudge must explicitly say to stop calling tools and answer instead."""
+    history = [
+        {"role": "user", "content": "What is 4821 * 37?"},
+        {"role": "assistant", "content": ""},
+        {"role": "tool", "content": "178377", "name": "execute_python"},
+    ]
+    result = _gemini_contents(history)
+
+    nudge = result[-1]
+    assert nudge.role == "user"
+    text = nudge.parts[0].text
+    assert "please continue" not in text.lower()
+    assert "final answer" in text.lower()
+    assert "do not call the same tool again" in text.lower()
+
+
 def test_gemini_no_continue_nudge_when_history_already_ends_on_user():
     """The synthetic "Please continue." nudge should only appear when the
     fold would otherwise leave the request ending on a "model" turn — not

@@ -341,8 +341,36 @@ def _gemini_contents(messages: list[dict]) -> list[gtypes.Content]:
     # after a tool executes, before any new real user message exists yet.
     # A tiny synthetic nudge satisfies that without reintroducing the
     # role="user" misattribution bug this function used to have.
+    #
+    # The nudge's exact wording matters a lot more than it looks: confirmed
+    # live as a second, distinct bug in this same area — a plain "Please
+    # continue." reliably made gemini-3.6-flash re-call the *same* tool
+    # with the *same* arguments over and over (execute_python -> 178377,
+    # again, again...) until max_tool_iterations, never once emitting a
+    # real answer. Reproduced via the actual SQLite-persisted message
+    # history: every single iteration's tool result was already the
+    # correct "178377" — the model had the answer from iteration 0, it
+    # just never stopped to say so. "Please continue" reads as "keep
+    # taking actions" to a tool-calling model, which is exactly the wrong
+    # instruction right after a tool already answered the question — an
+    # explicit "stop calling tools and answer now" directive is what
+    # actually needs to be said.
     if result and result[-1].role == "model":
-        result.append(gtypes.Content(role="user", parts=[gtypes.Part.from_text(text="Please continue.")]))
+        result.append(
+            gtypes.Content(
+                role="user",
+                parts=[
+                    gtypes.Part.from_text(
+                        text=(
+                            "Using the tool result(s) above, give your final answer to the user now — "
+                            "state the actual value/fact from the result directly. Do not call the same "
+                            "tool again with the same input; you already have that result. Only call a "
+                            "different tool if the result above genuinely does not answer the question yet."
+                        )
+                    )
+                ],
+            )
+        )
 
     return result
 

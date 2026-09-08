@@ -566,7 +566,19 @@ def _keyword_overlap_hit(query_words: set[str], chunk_text: str) -> bool:
     if not query_words:
         return False
     matched = query_words & _significant_words(chunk_text)
-    return len(matched) >= _MIN_KEYWORD_OVERLAP_COUNT and len(matched) / len(query_words) >= _MIN_KEYWORD_OVERLAP_RATIO
+    # min(_MIN_KEYWORD_OVERLAP_COUNT, len(query_words)) — not a flat
+    # _MIN_KEYWORD_OVERLAP_COUNT. Confirmed live as a real bug: a hard floor
+    # of 2 matched words makes this unreachable for ANY single-word query,
+    # no matter how exact the match — searching a knowledge base containing
+    # "AIML.pdf" for the single word "AIML" returned "No matches" even
+    # though the word appears verbatim, because a 1-word query can never
+    # contain 2 matched words. Scaling the floor down to the query's own
+    # length for short queries preserves the original intent (a single
+    # coincidental shared word in a multi-word query still isn't a strong
+    # enough signal on its own) while fixing the case that intent was never
+    # meant to block: a short, distinctive, exact match.
+    required = min(_MIN_KEYWORD_OVERLAP_COUNT, len(query_words))
+    return len(matched) >= required and len(matched) / len(query_words) >= _MIN_KEYWORD_OVERLAP_RATIO
 
 
 def _filenames_mentioned_in(query: str) -> set[str]:
@@ -581,9 +593,30 @@ def _filenames_mentioned_in(query: str) -> set[str]:
     (OCR'd) content in embedding space. Only checks the filename-in-query
     direction, not the reverse — matching on "does the query contain this
     filename" is precise; the reverse ("does this filename contain the
-    query") would trigger on any short/generic query fragment."""
+    query") would trigger on any short/generic query fragment.
+
+    Also matches a filename's base name alone, without its extension —
+    confirmed live as a real, separate gap: searching a real knowledge base
+    containing "AIML.pdf" for just "AIML" (the natural, extension-less way
+    anyone actually refers to a document — nobody types ".pdf" when asking
+    about a file) never triggered this bypass at all, since the check
+    required the literal ".pdf" too, even though the query names the
+    document exactly as precisely as a full filename would. Guarded to
+    stems of at least 3 characters (matching _WORD_RE's own minimum
+    elsewhere in this file) so a trivially short stem can't match on any
+    coincidental short fragment of the query."""
     query_lower = query.lower()
-    return {doc["filename"] for doc in structured.list_documents() if doc["filename"].lower() in query_lower}
+    matched = set()
+    for doc in structured.list_documents():
+        filename = doc["filename"]
+        filename_lower = filename.lower()
+        if filename_lower in query_lower:
+            matched.add(filename)
+            continue
+        stem = filename_lower.rsplit(".", 1)[0] if "." in filename_lower else filename_lower
+        if len(stem) >= 3 and stem in query_lower:
+            matched.add(filename)
+    return matched
 
 
 def search(query: str, n_results: int = 5) -> list[dict]:
