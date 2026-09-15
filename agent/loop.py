@@ -498,8 +498,16 @@ class Agent:
         used_volatile_tool = False
         # See _repeated_tool_call_notice's docstring — tracks (name, args)
         # pairs already executed THIS turn so an exact repeat can be
-        # caught and short-circuited instead of silently re-run.
+        # caught and short-circuited instead of silently re-run, and the
+        # real result each one produced (last_result_by_call_key) so an
+        # exact repeat can end the turn immediately with that real answer
+        # — confirmed live, for two different tools/providers now
+        # (open_website/qwen originally, get_weather/Gemini), that just
+        # returning a "you already called this" notice and continuing the
+        # loop isn't reliably enough to make the model actually stop; it
+        # can just ask again next iteration anyway.
         seen_tool_calls: set[tuple] = set()
+        last_result_by_call_key: dict[tuple, str] = {}
         # See _SINGLE_SHOT_TOOL_CALL_LIMIT's docstring — tracks how many
         # times each tool name has genuinely executed this turn (not
         # counting skipped exact-repeats), and the last real result each
@@ -572,22 +580,45 @@ class Agent:
 
                 call_key = _tool_call_key(fn["name"], args)
                 if call_key in seen_tool_calls:
-                    logger.warning("Skipping a repeated identical tool call: %s(%s)", fn["name"], args)
-                    result = _repeated_tool_call_notice(fn["name"])
-                else:
-                    # on_tool fires only for a call that's actually about to
-                    # run — not once per call the model merely asked for —
-                    # so the UI's tool-call pills reflect real executions
-                    # one-to-one, never a duplicate for a request that was
-                    # capped or deduped away before it ever ran.
-                    if on_tool:
-                        on_tool(fn["name"])
-                    seen_tool_calls.add(call_key)
-                    tool_name_counts[fn["name"]] = tool_name_counts.get(fn["name"], 0) + 1
-                    last_result_by_name[fn["name"]] = result = execute_tool(fn["name"], args)
-                    if fn["name"] in VOLATILE_TOOLS:
-                        used_volatile_tool = True
-                    logger.debug("Tool %s(%s) -> %s", fn["name"], args, str(result)[:200])
+                    # An exact repeat — same tool, same arguments, already
+                    # executed this turn. End the turn right now with that
+                    # real result rather than a notice-and-hope: confirmed
+                    # live (get_weather({'city': 'Leh'}) via Gemini, 7
+                    # times in a row) that the model can just keep asking
+                    # again anyway, burning the whole turn's iteration
+                    # budget instead of ever answering.
+                    logger.warning(
+                        "Exact repeat of %s(%s) — ending the turn with its real result instead of "
+                        "asking again.",
+                        fn["name"],
+                        args,
+                    )
+                    final_result = last_result_by_call_key.get(call_key) or _repeated_tool_call_notice(
+                        fn["name"]
+                    )
+                    if on_tool_result:
+                        on_tool_result(fn["name"], final_result)
+                    on_chunk(final_result)
+                    full_text = final_result
+                    self._record("assistant", final_result)
+                    force_ended = True
+                    break
+
+                # on_tool fires only for a call that's actually about to
+                # run — not once per call the model merely asked for — so
+                # the UI's tool-call pills reflect real executions
+                # one-to-one, never a duplicate for a request that was
+                # capped or deduped away before it ever ran.
+                if on_tool:
+                    on_tool(fn["name"])
+                seen_tool_calls.add(call_key)
+                tool_name_counts[fn["name"]] = tool_name_counts.get(fn["name"], 0) + 1
+                result = execute_tool(fn["name"], args)
+                last_result_by_name[fn["name"]] = result
+                last_result_by_call_key[call_key] = result
+                if fn["name"] in VOLATILE_TOOLS:
+                    used_volatile_tool = True
+                logger.debug("Tool %s(%s) -> %s", fn["name"], args, str(result)[:200])
                 if on_tool_result:
                     on_tool_result(fn["name"], result)
                 self._record("tool", result, name=fn["name"])
@@ -628,6 +659,7 @@ class Agent:
         # See _repeated_tool_call_notice's/_SINGLE_SHOT_TOOL_CALL_LIMIT's
         # docstrings — same fix as chat_streaming's identical loop.
         seen_tool_calls: set[tuple] = set()
+        last_result_by_call_key: dict[tuple, str] = {}
         tool_name_counts: dict[str, int] = {}
         last_result_by_name: dict[str, str] = {}
 
@@ -666,15 +698,30 @@ class Agent:
 
                 call_key = _tool_call_key(fn["name"], args)
                 if call_key in seen_tool_calls:
-                    logger.warning("Skipping a repeated identical tool call: %s(%s)", fn["name"], args)
-                    result = _repeated_tool_call_notice(fn["name"])
-                else:
-                    seen_tool_calls.add(call_key)
-                    tool_name_counts[fn["name"]] = tool_name_counts.get(fn["name"], 0) + 1
-                    last_result_by_name[fn["name"]] = result = execute_tool(fn["name"], args)
-                    if fn["name"] in VOLATILE_TOOLS:
-                        used_volatile_tool = True
-                    logger.debug("Tool %s(%s) -> %s", fn["name"], args, str(result)[:200])
+                    # See chat_streaming's identical branch — end the turn
+                    # now with the real result already in hand, rather
+                    # than a notice-and-hope the model reliably won't ask
+                    # again.
+                    logger.warning(
+                        "Exact repeat of %s(%s) — ending the turn with its real result instead of "
+                        "asking again.",
+                        fn["name"],
+                        args,
+                    )
+                    final_result = last_result_by_call_key.get(call_key) or _repeated_tool_call_notice(
+                        fn["name"]
+                    )
+                    self._record("assistant", final_result)
+                    return final_result.strip(), used_volatile_tool
+
+                seen_tool_calls.add(call_key)
+                tool_name_counts[fn["name"]] = tool_name_counts.get(fn["name"], 0) + 1
+                result = execute_tool(fn["name"], args)
+                last_result_by_name[fn["name"]] = result
+                last_result_by_call_key[call_key] = result
+                if fn["name"] in VOLATILE_TOOLS:
+                    used_volatile_tool = True
+                logger.debug("Tool %s(%s) -> %s", fn["name"], args, str(result)[:200])
                 self._record("tool", result, name=fn["name"])
 
             messages = list(self.history)

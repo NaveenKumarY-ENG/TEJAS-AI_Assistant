@@ -338,6 +338,83 @@ def test_chat_streaming_skips_a_repeated_identical_tool_call():
     assert "tool-call limit" not in final
 
 
+def test_chat_streaming_ends_the_turn_on_an_exact_repeat_of_any_tool_not_just_open_website():
+    """Confirmed live as the same class of bug on a DIFFERENT tool and a
+    DIFFERENT provider: asked about the weather in Leh, Gemini called
+    get_weather({'city': 'Leh'}), got a real result, then called the
+    EXACT same get_weather({'city': 'Leh'}) again 6 more times in a row —
+    each one correctly skipped from re-executing (get_weather isn't in
+    _SINGLE_SHOT_TOOL_CALL_LIMIT, since legitimately asking about several
+    different cities in one turn must still work), but the model never
+    respected the "you already called this" notice and just kept asking,
+    burning the whole turn's iteration budget. Any exact (name, args)
+    repeat — for any tool, not just the ones with a configured single-shot
+    limit — must now end the turn immediately with the real result
+    already in hand."""
+    call_count = {"n": 0}
+
+    def fake_call_llm_streaming(messages, tools):
+        call_count["n"] += 1
+        return _fake_tool_call_stream("get_weather", {"city": "Leh"})
+
+    executed = []
+
+    def fake_execute_tool(name, args):
+        executed.append((name, args))
+        return "Weather for Leh, India: Now: 11.6degC, humidity 30%"
+
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.call_llm_streaming", side_effect=fake_call_llm_streaming
+    ), patch("agent.loop.execute_tool", side_effect=fake_execute_tool):
+        agent = _make_agent()
+        final = agent.chat_streaming("what is the weather in leh ladhak", on_chunk=lambda _: None)
+
+    # Executed exactly once, regardless of how many times the model kept
+    # asking (the fake model would ask forever — call_count is not capped
+    # here on purpose, to prove the loop itself is what stops it).
+    assert executed == [("get_weather", {"city": "Leh"})]
+    assert "Leh" in final
+    assert "tool-call limit" not in final
+    # The loop didn't need to exhaust its iteration budget to get there.
+    assert call_count["n"] <= 2
+
+
+def test_chat_ends_the_turn_on_an_exact_repeat_of_any_tool_not_just_open_website():
+    """Same fix, same regression, for the non-streaming chat()/
+    _run_tool_loop twin."""
+    call_count = {"n": 0}
+
+    def fake_call_llm(messages, tools):
+        call_count["n"] += 1
+        return {
+            "message": {
+                "content": "",
+                "tool_calls": [{"function": {"name": "get_weather", "arguments": {"city": "Leh"}}}],
+            }
+        }
+
+    executed = []
+
+    def fake_execute_tool(name, args):
+        executed.append((name, args))
+        return "Weather for Leh, India: Now: 11.6degC, humidity 30%"
+
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.call_llm", side_effect=fake_call_llm
+    ), patch("agent.loop.execute_tool", side_effect=fake_execute_tool):
+        agent = _make_agent()
+        final = agent.chat("what is the weather in leh ladhak")
+
+    assert executed == [("get_weather", {"city": "Leh"})]
+    assert "Leh" in final
+    assert "tool-call limit" not in final
+    assert call_count["n"] <= 2
+
+
 def test_chat_streaming_ends_the_turn_when_a_single_shot_tool_is_dodge_repeated():
     """The actual regression test for the real, SECOND live report: even
     with the exact-repeat dedup above in place, a local model could still
