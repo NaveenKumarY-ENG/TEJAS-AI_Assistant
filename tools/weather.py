@@ -25,6 +25,17 @@ _CITY_ALIASES = {
     "trivandrum": "Thiruvananthapuram",
     "mysore": "Mysuru",
     "baroda": "Vadodara",
+    # Confirmed live as a real, separate gap: "Leh Ladakh" — the standard,
+    # extremely common way people refer to this town (Ladakh being the
+    # district/region it's the capital of, routinely tacked on) — returns
+    # ZERO results from Open-Meteo's geocoding at all, even though the
+    # bare "Leh" resolves fine on its own. "Ladhak" is included as a
+    # common real-world misspelling (confirmed live, the user's own
+    # spelling) since this tool has no separate typo-tolerance layer.
+    "leh ladakh": "Leh",
+    "leh ladhak": "Leh",
+    "ladakh": "Leh",
+    "ladhak": "Leh",
 }
 
 
@@ -58,7 +69,23 @@ class WeatherTool(Tool):
             if not results:
                 return f"Could not find a location named '{city}'."
 
-            place = max(results, key=lambda r: r.get("population") or 0)
+            # Prefer an EXACT name match over a fuzzier one, even if the
+            # fuzzy match has a much bigger population. Confirmed live as
+            # a real, separate bug from the Bangalore/Bombay case above:
+            # searching "Leh" (the real town in Ladakh, India; population
+            # ~37k) returned "Le Havre" (France; population ~186k) as the
+            # single highest-population candidate in Open-Meteo's fuzzy
+            # results — even though an exact "Leh, India" match was right
+            # there in the same result set, just outranked by population.
+            # Population is only used to break ties among exact matches
+            # (several real, differently-located places can share one
+            # name — several other countries have their own "Leh" too) or
+            # as a last resort when nothing matches exactly (a genuine
+            # typo/rare-spelling query, where the fuzzy fallback below is
+            # still the best available guess).
+            exact_matches = [r for r in results if r["name"].strip().lower() == query.strip().lower()]
+            candidates = exact_matches or results
+            place = max(candidates, key=lambda r: r.get("population") or 0)
             lat, lon = place["latitude"], place["longitude"]
             label = f"{place['name']}, {place.get('country', '')}".strip(", ")
 

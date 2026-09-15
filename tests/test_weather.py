@@ -122,3 +122,65 @@ def test_city_not_found_returns_a_clear_message():
     with patch("tools.weather.requests.get", side_effect=_mock_get([])):
         result = WeatherTool().run(city="Nowhereville")
     assert "Could not find" in result
+
+
+def test_leh_ladakh_resolves_via_alias_since_the_combined_phrase_has_no_geocoding_results():
+    """Regression test for a real bug found live: asked for the weather in
+    "Leh Ladakh"/"Leh Ladhak" (the standard, everyday way people refer to
+    this town — Ladakh being the district it's the capital of), Open-Meteo's
+    geocoding API returns zero results for the combined two-word query,
+    even though the bare "Leh" resolves fine on its own. Covers both the
+    correct spelling and the real misspelling this was actually reported
+    with."""
+    for spoken_name in ("Leh Ladakh", "Leh Ladhak", "Ladakh", "Ladhak"):
+        captured_query = {}
+
+        def get(url, params=None, timeout=None, _captured=captured_query):
+            if "geocoding" in url:
+                _captured["name"] = params["name"]
+            response = Mock()
+            response.raise_for_status = Mock()
+            response.json = Mock(
+                return_value={"results": [{"name": "Leh", "country": "India", "latitude": 34.17, "longitude": 77.58, "population": 37_475}]}
+                if "geocoding" in url
+                else _FORECAST_RESPONSE
+            )
+            return response
+
+        with patch("tools.weather.requests.get", side_effect=get):
+            result = WeatherTool().run(city=spoken_name)
+        assert captured_query["name"] == "Leh"
+        assert "Leh, India" in result
+
+
+def test_exact_name_match_beats_a_more_populous_fuzzy_match():
+    """Regression test for a real bug found live: searching "Leh" (the
+    real town in Ladakh, India; population ~37k) returned "Le Havre"
+    (France; population ~186k) instead — Open-Meteo's fuzzy geocoding
+    included Le Havre as a candidate for "Leh", and picking purely by
+    population let it outrank the actual exact-name match sitting in the
+    same result set. An exact match must always win over a fuzzier one,
+    regardless of population."""
+    geo_results = [
+        {"name": "Le Havre", "country": "France", "latitude": 49.49, "longitude": 0.11, "population": 185_972},
+        {"name": "Leh", "country": "India", "latitude": 34.17, "longitude": 77.58, "population": 37_475},
+    ]
+    with patch("tools.weather.requests.get", side_effect=_mock_get(geo_results)):
+        result = WeatherTool().run(city="Leh")
+    assert "Leh, India" in result
+    assert "Le Havre" not in result
+
+
+def test_exact_matches_still_break_ties_by_population():
+    """Several real, differently-located places can share one exact
+    name (confirmed live: Open-Meteo lists a "Leh" in India, Austria,
+    Pakistan, and twice in Switzerland) — among exact matches, the most
+    populous one is still the best default guess."""
+    geo_results = [
+        {"name": "Leh", "country": "Switzerland", "latitude": 1.0, "longitude": 1.0, "population": None},
+        {"name": "Leh", "country": "India", "latitude": 34.17, "longitude": 77.58, "population": 37_475},
+        {"name": "Leh", "country": "Austria", "latitude": 2.0, "longitude": 2.0, "population": None},
+    ]
+    with patch("tools.weather.requests.get", side_effect=_mock_get(geo_results)):
+        result = WeatherTool().run(city="Leh")
+    assert "Leh, India" in result

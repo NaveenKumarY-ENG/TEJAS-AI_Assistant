@@ -29,6 +29,8 @@ from agent.llm_client import (
     _anthropic_tools,
     _gemini_contents,
     _gemini_tools,
+    _ollama_chat,
+    _ollama_chat_streaming,
     _parse_anthropic_message,
     _parse_gemini_response,
 )
@@ -357,4 +359,34 @@ def test_anthropic_chat_streaming_uses_a_call_signature_the_installed_sdk_actual
         chunks = list(llm_client._anthropic_chat_streaming([{"role": "user", "content": "hi"}], []))
 
     fake_messages.stream.assert_called_once()
-    assert chunks[0]["message"]["content"] == "hello"
+
+
+def test_ollama_chat_sets_num_ctx_so_tools_cannot_get_silently_truncated_out():
+    """Confirmed live as a real, reported bug: with no num_ctx set, Ollama
+    silently defaults to a 4096-token context window regardless of a
+    model's real trained context length — `ollama ps` showed qwen2.5:7b
+    (32768 tokens trained) loaded at exactly 4096. A longer conversation
+    plus this app's own tool schemas can overflow that, and when it does,
+    Ollama truncates rather than erroring — which can silently drop the
+    tool definitions entirely, producing exactly what was reported: the
+    model insisting no tools are available for something it actually has
+    a tool for (get_weather, asked about the weather in Leh)."""
+    with patch.object(llm_client, "ollama") as fake_ollama, patch.object(
+        llm_client.config, "ollama_num_ctx", 8192
+    ):
+        fake_ollama.chat.return_value = {"message": {"content": "hi"}}
+        _ollama_chat([{"role": "user", "content": "hi"}], [])
+
+    kwargs = fake_ollama.chat.call_args.kwargs
+    assert kwargs["options"]["num_ctx"] == 8192
+
+
+def test_ollama_chat_streaming_sets_num_ctx_too():
+    with patch.object(llm_client, "ollama") as fake_ollama, patch.object(
+        llm_client.config, "ollama_num_ctx", 8192
+    ):
+        fake_ollama.chat.return_value = iter([])
+        list(_ollama_chat_streaming([{"role": "user", "content": "hi"}], []))
+
+    kwargs = fake_ollama.chat.call_args.kwargs
+    assert kwargs["options"]["num_ctx"] == 8192

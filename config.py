@@ -86,6 +86,22 @@ class Config:
     # this keeps it warm for a realistic single-session gap instead of
     # paying that reload cost on every message.
     ollama_keep_alive: str = field(default_factory=lambda: os.getenv("OLLAMA_KEEP_ALIVE", "30m"))
+    # Confirmed live as a real, reported bug: with no num_ctx set, Ollama
+    # silently uses its own runtime default of 4096 tokens regardless of a
+    # model's real trained context length (qwen2.5:7b supports 32768) —
+    # `ollama ps` showed the loaded instance capped at exactly 4096. This
+    # app's own tool schemas alone run several hundred tokens, on top of
+    # the system prompt and up to max_history_messages of prior
+    # conversation, so a longer-running session can genuinely overflow
+    # 4096 — and when it does, Ollama truncates from the context rather
+    # than erroring, which can silently drop the tool definitions
+    # entirely. That produces exactly this: the model insists no tools
+    # are available for something it actually has a tool for (get_weather
+    # for "weather in Leh"), because as far as its truncated context is
+    # concerned, none were ever given to it. 8192 comfortably covers this
+    # app's real prompt sizes without the extra memory/compute cost of
+    # going all the way to the model's full 32768.
+    ollama_num_ctx: int = field(default_factory=lambda: int(os.getenv("OLLAMA_NUM_CTX", "8192")))
     max_tokens: int = 1024
     max_tool_iterations: int = 8  # hard cap to prevent infinite tool-call loops
     max_history_messages: int = 20  # keep last N messages; older ones are dropped

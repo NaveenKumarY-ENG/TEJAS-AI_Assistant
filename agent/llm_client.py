@@ -72,7 +72,12 @@ def _ollama_chat(messages: list[dict], tools: list[dict]):
     kwargs = {
         "model": config.ollama_model,
         "messages": ollama_messages,
-        "options": {"temperature": config.llm_temperature},
+        # num_ctx: see config.ollama_num_ctx's docstring — without this,
+        # Ollama silently defaults to 4096 tokens regardless of the
+        # model's real context length, which a longer conversation plus
+        # this app's own tool schemas can overflow, silently truncating
+        # the tool definitions out of the prompt entirely.
+        "options": {"temperature": config.llm_temperature, "num_ctx": config.ollama_num_ctx},
         "keep_alive": config.ollama_keep_alive,
     }
     # Some local models (e.g. gemma2) don't implement Ollama's tool-calling
@@ -90,7 +95,7 @@ def _ollama_chat_streaming(messages: list[dict], tools: list[dict]):
         "model": config.ollama_model,
         "messages": ollama_messages,
         "stream": True,
-        "options": {"temperature": config.llm_temperature},
+        "options": {"temperature": config.llm_temperature, "num_ctx": config.ollama_num_ctx},
         "keep_alive": config.ollama_keep_alive,
     }
     if config.active_model_supports_tools:
