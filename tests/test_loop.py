@@ -16,6 +16,8 @@ from agent.loop import (
     _is_knowledge_listing_query,
     _is_reminder_query,
     _is_volatile_query,
+    _repeated_tool_call_notice,
+    _tool_call_key,
 )
 
 
@@ -262,9 +264,103 @@ def test_messages_for_llm_omits_cart_directive_for_unrelated_messages():
     assert "order_amazon" not in messages[-1]["content"]
 
 
+def test_tool_call_key_is_order_independent_and_distinguishes_arguments():
+    assert _tool_call_key("open_website", {"site": "wikipedia"}) == _tool_call_key("open_website", {"site": "wikipedia"})
+    # Argument order in the dict must not matter — the model can emit keys
+    # in any order across two otherwise-identical calls.
+    assert _tool_call_key("get_weather", {"city": "Delhi", "units": "metric"}) == _tool_call_key(
+        "get_weather", {"units": "metric", "city": "Delhi"}
+    )
+    assert _tool_call_key("open_website", {"site": "wikipedia"}) != _tool_call_key("open_website", {"site": "github"})
+    assert _tool_call_key("open_website", {"site": "x"}) != _tool_call_key("shop_flipkart", {"site": "x"})
+
+
+def test_repeated_tool_call_notice_tells_the_model_to_stop_and_answer():
+    notice = _repeated_tool_call_notice("open_website")
+    assert "open_website" in notice
+    assert "stop" in notice.lower() or "already" in notice.lower()
+
+
 def _fake_stream(text: str):
     """A minimal call_llm_streaming-shaped generator: one chunk, no tool calls."""
     yield {"message": {"content": text}}
+
+
+def _fake_tool_call_stream(name: str, arguments: dict):
+    """A minimal call_llm_streaming-shaped generator: one tool call, no text."""
+    yield {"message": {"content": "", "tool_calls": [{"function": {"name": name, "arguments": arguments}}]}}
+
+
+def test_chat_streaming_skips_a_repeated_identical_tool_call():
+    """The actual regression test for the real, live-reproduced bug
+    (confirmed via the real SQLite-persisted conversation history): asked
+    to "open wikipedia," a 7B local model called open_website, got back a
+    real, unambiguous success, and then called the exact same tool with
+    the exact same argument 7 more times in a row instead of ever
+    replying — burning the whole turn's tool-call budget. The loop must
+    detect an exact repeat and stop actually re-executing the tool,
+    regardless of whether the model itself ever stops asking for it."""
+    call_count = {"n": 0}
+
+    def fake_call_llm_streaming(messages, tools):
+        call_count["n"] += 1
+        if call_count["n"] <= 3:
+            return _fake_tool_call_stream("open_website", {"site": "wikipedia"})
+        return _fake_stream("Done!")
+
+    executed = []
+
+    def fake_execute_tool(name, args):
+        executed.append((name, args))
+        return "Opened https://www.wikipedia.org for you in a browser window."
+
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.call_llm_streaming", side_effect=fake_call_llm_streaming
+    ), patch("agent.loop.execute_tool", side_effect=fake_execute_tool):
+        agent = _make_agent()
+        chunks = []
+        final = agent.chat_streaming("open wikipedia", on_chunk=chunks.append)
+
+    # The tool was genuinely EXECUTED only once — the model "asking" for
+    # it 3 times must not mean 3 real browser navigations.
+    assert executed == [("open_website", {"site": "wikipedia"})]
+    assert "Done!" in final
+
+
+def test_chat_skips_a_repeated_identical_tool_call():
+    """Same fix, same regression, for the non-streaming chat()/
+    _run_tool_loop twin."""
+    call_count = {"n": 0}
+
+    def fake_call_llm(messages, tools):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            return {
+                "message": {
+                    "content": "",
+                    "tool_calls": [{"function": {"name": "open_website", "arguments": {"site": "wikipedia"}}}],
+                }
+            }
+        return {"message": {"content": "Done!", "tool_calls": []}}
+
+    executed = []
+
+    def fake_execute_tool(name, args):
+        executed.append((name, args))
+        return "Opened https://www.wikipedia.org for you in a browser window."
+
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.call_llm", side_effect=fake_call_llm
+    ), patch("agent.loop.execute_tool", side_effect=fake_execute_tool):
+        agent = _make_agent()
+        final = agent.chat("open wikipedia")
+
+    assert executed == [("open_website", {"site": "wikipedia"})]
+    assert final == "Done!"
 
 
 def test_chat_streaming_appends_canonical_table_verbatim():

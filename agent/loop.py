@@ -164,6 +164,41 @@ def _is_explicit_web_query(text: str) -> bool:
     return bool(_EXPLICIT_WEB_QUERY_RE.search(text))
 
 
+def _tool_call_key(name: str, arguments: dict) -> tuple:
+    """A hashable fingerprint for "this exact tool call, with these exact
+    arguments" — every tool in this codebase takes a flat dict of
+    strings/numbers/bools (see tools/base.py's Tool.input_schema
+    convention), so sorting its items is enough for a stable, order-
+    independent key."""
+    return (name, tuple(sorted((arguments or {}).items())))
+
+
+def _repeated_tool_call_notice(name: str) -> str:
+    """Confirmed live as a real, severe, reliably-reproduced failure mode
+    — NOT something a system-prompt rule alone fixed, so (matching this
+    codebase's established pattern: don't leave an unreliable judgment
+    call to the model — see knowledge-base search/reminder-listing/
+    structured-table handling above, all fixed the same way) this is
+    enforced deterministically in code instead. Asked to "open wikipedia,"
+    a 7B local model called open_website, got back a real, unambiguous
+    success ("Opened https://www.wikipedia.org for you in a browser
+    window"), and then called the exact same tool with the exact same
+    argument 7 more times in a row — burning the entire per-turn tool
+    budget on repeats of a call that had already succeeded the first
+    time, never once replying to the user. Skipping the actual
+    re-execution (real browser navigations/API calls are not free, and
+    repeating one doesn't produce new information anyway) and substituting
+    this instead gives the model a maximally explicit, impossible-to-miss
+    signal to stop and answer, right where it's looking (the tool result
+    it just "received"), rather than hoping a rule stated once, far above
+    in the system prompt, gets re-attended to on every iteration."""
+    return (
+        f"(You already called {name} with these exact arguments earlier this turn and got a real "
+        "result — calling it again with the same arguments will not produce a different one. Stop "
+        "calling tools and reply to the user now, using the result you already have.)"
+    )
+
+
 class Agent:
     def __init__(self, session_id: int | None = None, resume: bool = False):
         """
@@ -414,6 +449,10 @@ class Agent:
                 on_tool_result("search_knowledge", knowledge.format_search_results(kb_results))
         full_text = ""
         used_volatile_tool = False
+        # See _repeated_tool_call_notice's docstring — tracks (name, args)
+        # pairs already executed THIS turn so an exact repeat can be
+        # caught and short-circuited instead of silently re-run.
+        seen_tool_calls: set[tuple] = set()
 
         for iteration in range(config.max_tool_iterations):
             stream = call_llm_streaming(messages, self.tool_schemas)
@@ -446,13 +485,20 @@ class Agent:
             logger.info("Iteration %d: executing %d tool call(s)", iteration, len(tool_calls))
             for call in tool_calls:
                 fn = call["function"]
-                if fn["name"] in VOLATILE_TOOLS:
-                    used_volatile_tool = True
+                args = fn.get("arguments", {}) or {}
                 if on_tool:
                     on_tool(fn["name"])
-                logger.debug("Tool %s(%s)", fn["name"], fn.get("arguments", {}))
-                result = execute_tool(fn["name"], fn.get("arguments", {}))
-                logger.debug("Tool %s -> %s", fn["name"], str(result)[:200])
+                call_key = _tool_call_key(fn["name"], args)
+                if call_key in seen_tool_calls:
+                    logger.warning("Skipping a repeated identical tool call: %s(%s)", fn["name"], args)
+                    result = _repeated_tool_call_notice(fn["name"])
+                else:
+                    seen_tool_calls.add(call_key)
+                    if fn["name"] in VOLATILE_TOOLS:
+                        used_volatile_tool = True
+                    logger.debug("Tool %s(%s)", fn["name"], args)
+                    result = execute_tool(fn["name"], args)
+                    logger.debug("Tool %s -> %s", fn["name"], str(result)[:200])
                 if on_tool_result:
                     on_tool_result(fn["name"], result)
                 self._record("tool", result, name=fn["name"])
@@ -486,6 +532,9 @@ class Agent:
     def _run_tool_loop(self, messages: list[dict], structured_tables: list[str] | None = None) -> tuple[str, bool]:
         """Returns (final_text, used_volatile_tool) — see VOLATILE_TOOLS."""
         used_volatile_tool = False
+        # See _repeated_tool_call_notice's docstring — same fix as
+        # chat_streaming's identical loop.
+        seen_tool_calls: set[tuple] = set()
 
         for iteration in range(config.max_tool_iterations):
             response = call_llm(messages, self.tool_schemas)
@@ -505,11 +554,18 @@ class Agent:
             logger.info("Iteration %d: executing %d tool call(s)", iteration, len(tool_calls))
             for call in tool_calls:
                 fn = call["function"]
-                if fn["name"] in VOLATILE_TOOLS:
-                    used_volatile_tool = True
-                logger.debug("Tool %s(%s)", fn["name"], fn.get("arguments", {}))
-                result = execute_tool(fn["name"], fn.get("arguments", {}))
-                logger.debug("Tool %s -> %s", fn["name"], str(result)[:200])
+                args = fn.get("arguments", {}) or {}
+                call_key = _tool_call_key(fn["name"], args)
+                if call_key in seen_tool_calls:
+                    logger.warning("Skipping a repeated identical tool call: %s(%s)", fn["name"], args)
+                    result = _repeated_tool_call_notice(fn["name"])
+                else:
+                    seen_tool_calls.add(call_key)
+                    if fn["name"] in VOLATILE_TOOLS:
+                        used_volatile_tool = True
+                    logger.debug("Tool %s(%s)", fn["name"], args)
+                    result = execute_tool(fn["name"], args)
+                    logger.debug("Tool %s -> %s", fn["name"], str(result)[:200])
                 self._record("tool", result, name=fn["name"])
 
             messages = list(self.history)
