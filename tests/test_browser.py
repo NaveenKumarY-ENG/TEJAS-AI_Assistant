@@ -67,6 +67,67 @@ def test_new_page_returns_a_page_from_a_healthy_context():
     mock_get_context.assert_called_once()
 
 
+def test_run_in_browser_always_runs_on_the_same_dedicated_thread():
+    """The actual regression test for the real, live-reported bug —
+    confirmed live TWICE, the second time revealing an earlier version of
+    this fix (dispatching only new_page() itself) was incomplete: a tool
+    that obtained a page via a dispatched new_page() and then called
+    page.goto()/etc. directly, undispatched, still broke with "Cannot
+    switch to a different thread" — Playwright's thread-binding applies to
+    every call that touches the browser, not just the first. Every tool
+    now wraps its ENTIRE unit of browser work (new_page() through the last
+    page.method() call) in one function passed to run_in_browser — this
+    test simulates exactly that shape (a function that calls new_page()
+    AND then calls a method on the page it got back) from several
+    different calling threads, and confirms it all lands on browser.py's
+    one dedicated thread every time."""
+    import threading
+
+    seen_thread_ids: list[int] = []
+
+    class FakePage:
+        def goto(self, url):
+            # The regression case: a second Playwright call, on the page
+            # new_page() already returned — must land on the SAME thread
+            # new_page() itself ran on, not the caller's thread.
+            seen_thread_ids.append(threading.get_ident())
+
+    class FakeContext:
+        def new_page(self):
+            seen_thread_ids.append(threading.get_ident())
+            return FakePage()
+
+    def do_browser_work():
+        page = browser.new_page()
+        page.goto("https://example.com")
+        return "ok"
+
+    with patch.object(browser, "get_context", return_value=FakeContext()):
+        results = []
+
+        def call_from_a_fresh_thread():
+            results.append(browser.run_in_browser(do_browser_work))
+
+        # Deliberately call run_in_browser() from several DIFFERENT calling
+        # threads (simulating asyncio.to_thread's pool handing out
+        # different worker threads across turns) — every one of them, and
+        # every Playwright call made inside do_browser_work, must still
+        # land on browser.py's own single dedicated thread.
+        for _ in range(5):
+            t = threading.Thread(target=call_from_a_fresh_thread)
+            t.start()
+            t.join()
+
+    assert results == ["ok"] * 5
+    # 2 recorded thread-ids per call (new_page() + goto()) x 5 calls.
+    assert len(seen_thread_ids) == 10
+    assert len(set(seen_thread_ids)) == 1, "browser work executed on more than one thread across calls"
+    # And that one shared thread must not be any of the (all different)
+    # calling threads above — confirming real dispatch happened, not a
+    # same-thread pass-through that would coincidentally look stable too.
+    assert threading.get_ident() not in seen_thread_ids
+
+
 def test_new_page_relaunches_when_the_context_was_closed():
     """The core regression this exists for: a real browser window closed
     manually (or crashed) leaves _context pointing at a dead context —

@@ -290,7 +290,11 @@ class OrderAmazonTool(Tool):
                 # Resolve a plain product name/description to a real URL via
                 # a live search — the exact same real browser code path
                 # shop_amazon itself uses (search_products), not a guess.
-                outcome = shopping_tool.search_products(product_name)
+                # search_products() does its own new_page()/goto()/
+                # extraction as one unit — dispatched together on the
+                # shared browser thread (see integrations/browser.py's
+                # module docstring).
+                outcome = browser.run_in_browser(shopping_tool.search_products, product_name)
                 if outcome.get("captcha"):
                     return (
                         f"Amazon showed a verification challenge while looking up '{product_name}' — "
@@ -330,69 +334,80 @@ class OrderAmazonTool(Tool):
                         "I won't substitute a different variant without you confirming."
                     )
 
-            page = browser.new_page()
-            page.goto(product_url, wait_until="domcontentloaded")
-            page.bring_to_front()
+            def _do_order():
+                # Everything from here through the final return is ONE
+                # unit of browser work — obtaining the page, extracting
+                # its title/price, clicking add-to-cart, navigating to
+                # checkout, extracting the summary — and must run together
+                # on the shared browser thread (see integrations/
+                # browser.py's module docstring for why splitting this
+                # across dispatched/undispatched calls was confirmed live
+                # to break).
+                page = browser.new_page()
+                page.goto(product_url, wait_until="domcontentloaded")
+                page.bring_to_front()
 
-            # Confirms this is genuinely a product page — the real gate for
-            # a pasted/shared link and a name-resolved link alike (a short
-            # link that redirected somewhere unexpected, a stale/removed
-            # listing, a hallucinated-but-shape-valid URL that 404s). Also
-            # doubles as the source of the product's real title for the
-            # success message below.
-            title_el = page.query_selector("#productTitle")
-            if not title_el:
-                return (
-                    "Opened that link, but it doesn't look like a real Amazon product page — the "
-                    "browser window is open for you to check it yourself."
-                )
-            product_title = title_el.inner_text().strip()
+                # Confirms this is genuinely a product page — the real gate for
+                # a pasted/shared link and a name-resolved link alike (a short
+                # link that redirected somewhere unexpected, a stale/removed
+                # listing, a hallucinated-but-shape-valid URL that 404s). Also
+                # doubles as the source of the product's real title for the
+                # success message below.
+                title_el = page.query_selector("#productTitle")
+                if not title_el:
+                    return (
+                        "Opened that link, but it doesn't look like a real Amazon product page — the "
+                        "browser window is open for you to check it yourself."
+                    )
+                product_title = title_el.inner_text().strip()
 
-            price_el = page.query_selector(".a-price .a-offscreen")
-            current_price = price_el.inner_text().strip() if price_el else None
+                price_el = page.query_selector(".a-price .a-offscreen")
+                current_price = price_el.inner_text().strip() if price_el else None
 
-            # Must run before _remember_results below overwrites the cached
-            # "searched" price with this current one.
-            price_note = _price_change_note(page, product_url)
-            shopping_tool._remember_results(
-                [{"title": product_title, "price": current_price, "rating": None, "link": product_url}]
-            )
-
-            if not _is_logged_in(page):
-                return (
-                    "You're not logged into Amazon in the shopping browser window — sign in there "
-                    "(the product page is already open for you), then ask me to try again."
-                )
-
-            if not _add_to_cart(page):
-                return (
-                    "Couldn't confirm the item was actually added to your cart — either there's no "
-                    "'Add to Cart' button on that page (a listing with no single default seller, or "
-                    "Amazon's layout changed), or the click didn't go through (a size/color prompt, "
-                    "a promo popup). Take a look at the browser window yourself."
+                # Must run before _remember_results below overwrites the cached
+                # "searched" price with this current one.
+                price_note = _price_change_note(page, product_url)
+                shopping_tool._remember_results(
+                    [{"title": product_title, "price": current_price, "rating": None, "link": product_url}]
                 )
 
-            price_suffix = f" ({current_price})" if current_price else ""
-            added_line = f'Added "{product_title}"{price_suffix} to your cart: {product_url}'
+                if not _is_logged_in(page):
+                    return (
+                        "You're not logged into Amazon in the shopping browser window — sign in there "
+                        "(the product page is already open for you), then ask me to try again."
+                    )
 
-            if not _go_to_checkout(page):
+                if not _add_to_cart(page):
+                    return (
+                        "Couldn't confirm the item was actually added to your cart — either there's no "
+                        "'Add to Cart' button on that page (a listing with no single default seller, or "
+                        "Amazon's layout changed), or the click didn't go through (a size/color prompt, "
+                        "a promo popup). Take a look at the browser window yourself."
+                    )
+
+                price_suffix = f" ({current_price})" if current_price else ""
+                added_line = f'Added "{product_title}"{price_suffix} to your cart: {product_url}'
+
+                if not _go_to_checkout(page):
+                    return (
+                        f"{added_line}\nCouldn't reach checkout automatically — the browser window is "
+                        "open at your cart for you to continue there."
+                    )
+
+                summary = _extract_checkout_summary(page)
+                if summary is None:
+                    return (
+                        f"{added_line}\nNavigated toward checkout, but couldn't confirm a real checkout "
+                        "page loaded correctly — check the browser window before proceeding."
+                    )
                 return (
-                    f"{added_line}\nCouldn't reach checkout automatically — the browser window is "
-                    "open at your cart for you to continue there."
+                    f"{added_line}\nReached Amazon's checkout review page. {summary}{price_note} Review "
+                    "the details in the browser window, choose a payment method, and click 'Place your "
+                    "order' yourself when ready — I never complete a purchase or select a payment method "
+                    "automatically."
                 )
 
-            summary = _extract_checkout_summary(page)
-            if summary is None:
-                return (
-                    f"{added_line}\nNavigated toward checkout, but couldn't confirm a real checkout "
-                    "page loaded correctly — check the browser window before proceeding."
-                )
-            return (
-                f"{added_line}\nReached Amazon's checkout review page. {summary}{price_note} Review "
-                "the details in the browser window, choose a payment method, and click 'Place your "
-                "order' yourself when ready — I never complete a purchase or select a payment method "
-                "automatically."
-            )
+            return browser.run_in_browser(_do_order)
         except Exception as e:
             logger.exception("Amazon order flow failed")
             return f"Something went wrong ordering from Amazon: {e}"

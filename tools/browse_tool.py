@@ -42,7 +42,38 @@ _SITE_ALIASES: dict[str, str] = {
     "netflix": "www.netflix.com",
     "spotify": "open.spotify.com",
     "whatsapp": "web.whatsapp.com",
+    # Confirmed live as real, reachable domains — added after a real
+    # report that both silently resolved wrong: "diesel" alone was fine,
+    # but "g-shock" isn't a real domain at all (the hyphen makes it look
+    # like one, but the actual site is the unhyphenated "gshock.com").
+    # The bare (no "www.") form specifically — confirmed live that
+    # "www.gshock.com" throws a real browser cert mismatch
+    # (net::ERR_CERT_COMMON_NAME_INVALID) even though it responds fine to
+    # a plain curl request; the bare domain doesn't have that problem.
+    "diesel": "www.diesel.com",
+    "g-shock": "gshock.com",
+    "gshock": "gshock.com",
+    "casio": "www.casio.com",
 }
+
+# Generic descriptor words that often ride along with the actual site/brand
+# name in a natural phrase ("diesel watches official website", "g-shock
+# watch site") but aren't part of any real domain. Confirmed live as a real
+# bug: without stripping these, the bare-word fallback below concatenated
+# the WHOLE phrase into a single nonsense guess (e.g.
+# "https://deiselwatchsite.com") instead of resolving just the brand name
+# inside it. "watchs" (not a real word) is included because that's the
+# literal phrasing confirmed live, likely a mishearing/typo of "watches."
+_GENERIC_DESCRIPTOR_WORDS = frozenset(
+    "website site official homepage home page store shop app online "
+    "watch watches watchs the a an of for".split()
+)
+
+
+def _strip_generic_descriptors(key: str) -> str:
+    words = [w for w in key.split() if w not in _GENERIC_DESCRIPTOR_WORDS]
+    return " ".join(words) if words else key
+
 
 _ALLOWED_SCHEMES = {"http", "https"}
 
@@ -96,9 +127,30 @@ def resolve_url(site: str) -> str:
     if close_match:
         return f"https://{_SITE_ALIASES[close_match[0]]}"
 
-    # A bare word with no known alias (or close typo of one) and no dot --
-    # best-effort a ".com", same instinct a person types into an address bar.
-    slug = re.sub(r"\s+", "", key)
+    # Strip generic descriptor words ("...official website", "...watch
+    # site") and re-check the alias table / a close-typo match against
+    # what's left — "diesel watchs website" -> "diesel" (a real, listed
+    # alias) instead of falling straight to the raw-phrase slug guess
+    # below. Only takes effect if stripping actually removed something;
+    # re-running the exact same checks on an unchanged key would be a
+    # wasted no-op.
+    cleaned_key = _strip_generic_descriptors(key)
+    if cleaned_key != key and cleaned_key:
+        if cleaned_key in _SITE_ALIASES:
+            return f"https://{_SITE_ALIASES[cleaned_key]}"
+        close_match = difflib.get_close_matches(cleaned_key, _SITE_ALIASES.keys(), n=1, cutoff=0.8)
+        if close_match:
+            return f"https://{_SITE_ALIASES[close_match[0]]}"
+        key = cleaned_key
+
+    # A bare word/phrase with no known alias (or close typo of one) and no
+    # dot -- best-effort a ".com", same instinct a person types into an
+    # address bar. Strips more than just whitespace: a hyphen in a spoken/
+    # typed brand name ("g-shock") doesn't necessarily mean the real domain
+    # has one too — confirmed live that "g-shock.com" isn't real but
+    # "gshock.com" is — so anything that isn't a letter or digit is
+    # dropped, not just collapsed.
+    slug = re.sub(r"[^a-z0-9]", "", key)
     if not slug:
         raise InvalidWebsite(f"'{site}' isn't a website I can open.")
     return f"https://{slug}.com"
@@ -111,14 +163,21 @@ class OpenWebsiteTool(Tool):
         "'youtube', 'example.com', 'https://...'). For just opening/browsing a site with no "
         "particular search in mind. For searching or shopping on Amazon use shop_amazon, and on "
         "Flipkart use shop_flipkart instead — they run a real search rather than just opening the "
-        "homepage."
+        "homepage. If a prior web_search (or earlier tool result) already returned the real URL for "
+        "what the user's asking about, pass that exact URL here — do not re-describe the site as a "
+        "phrase ('diesel watches official website'); a short name or the real URL resolves far more "
+        "reliably than a guessed-at description."
     )
     input_schema = {
         "type": "object",
         "properties": {
             "site": {
                 "type": "string",
-                "description": "The website to open — a name ('flipkart', 'youtube'), a bare domain ('example.com'), or a full URL.",
+                "description": (
+                    "The website to open — a short name ('flipkart', 'diesel'), a bare domain "
+                    "('example.com'), or a full URL. Not a descriptive phrase — if you already know "
+                    "the real URL (e.g. from a prior web_search result), use that exact URL here."
+                ),
             },
         },
         "required": ["site"],
@@ -136,11 +195,21 @@ class OpenWebsiteTool(Tool):
             url = resolve_url(site)
         except InvalidWebsite as e:
             return str(e)
-        try:
+
+        def _do_open():
             page = browser.new_page()
             page.goto(url, wait_until="domcontentloaded")
             page.bring_to_front()
             return f"Opened {url} for you in a browser window."
+
+        try:
+            # The whole unit of browser work — obtaining a page AND
+            # navigating it — runs together on the single dedicated
+            # browser thread (see integrations/browser.py's module
+            # docstring for why calling page.goto() out here, after only
+            # new_page() was dispatched, was confirmed live to still
+            # break with "Cannot switch to a different thread").
+            return browser.run_in_browser(_do_open)
         except Exception as e:
             logger.exception("open_website navigation failed")
             return f"Something went wrong opening {url}: {e}"

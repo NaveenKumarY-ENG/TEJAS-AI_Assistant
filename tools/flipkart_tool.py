@@ -233,12 +233,21 @@ class ShopFlipkartTool(Tool):
             return f"That price range doesn't make sense (₹{min_price:g} to ₹{max_price:g}) — the minimum is higher than the maximum."
         try:
             if not query:
-                page = browser.new_page()
-                page.goto("https://www.flipkart.com", wait_until="domcontentloaded")
-                page.bring_to_front()
+                def _open_homepage():
+                    page = browser.new_page()
+                    page.goto("https://www.flipkart.com", wait_until="domcontentloaded")
+                    page.bring_to_front()
+
+                # Obtaining the page AND navigating it must run together as
+                # one dispatched unit on the shared browser thread — see
+                # integrations/browser.py's module docstring.
+                browser.run_in_browser(_open_homepage)
                 return "Opened Flipkart for you — browse in the window, or tell me what to search for."
 
-            outcome = search_products(query, min_price, max_price)
+            # search_products() does its own new_page()/goto()/extraction —
+            # the whole function is the unit of browser work, dispatched
+            # together (same reasoning as _open_homepage above).
+            outcome = browser.run_in_browser(search_products, query, min_price, max_price)
 
             if outcome.get("no_listings"):
                 return (

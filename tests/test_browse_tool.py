@@ -77,6 +77,32 @@ def test_resolve_url_does_not_typo_match_an_unrelated_word():
     assert resolve_url("cnn") == "https://cnn.com"
 
 
+def test_resolve_url_strips_generic_descriptor_words_around_a_real_alias():
+    """Confirmed live as a real, reported bug: "diesel watchs website" (a
+    natural, unremarkable way to ask for a site) used to concatenate the
+    WHOLE phrase into one nonsense guess (https://deiselwatchswebsite.com)
+    instead of resolving the real brand name inside it."""
+    assert resolve_url("diesel watchs website") == "https://www.diesel.com"
+    assert resolve_url("diesel official website") == "https://www.diesel.com"
+    assert resolve_url("the g-shock store") == "https://gshock.com"
+
+
+def test_resolve_url_strips_descriptors_before_a_typo_match_too():
+    """The typo-tolerance and descriptor-stripping fixes must compose —
+    "deisel watchs website" is both a typo AND wrapped in descriptor
+    words, confirmed live as the exact real report."""
+    assert resolve_url("deisel watchs website") == "https://www.diesel.com"
+
+
+def test_resolve_url_strips_hyphens_from_the_bare_word_fallback():
+    """Confirmed live (curl) as a real, separate bug: a spoken/typed
+    hyphenated brand name doesn't necessarily mean the real domain has a
+    hyphen too — "g-shock.com" doesn't resolve at all, but "gshock.com"
+    does. Uses an alias-free hyphenated word here so this exercises the
+    final bare-word fallback specifically, not the g-shock alias itself."""
+    assert resolve_url("under-armour") == "https://underarmour.com"
+
+
 def test_resolve_url_rejects_empty_input():
     with pytest.raises(InvalidWebsite):
         resolve_url("")

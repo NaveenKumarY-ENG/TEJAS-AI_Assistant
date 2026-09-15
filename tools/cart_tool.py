@@ -214,7 +214,9 @@ class ViewCartTool(Tool):
                 "Amazon shopping isn't set up on this server — install Playwright's browser "
                 "(see README.md's Setup section) to enable this."
             )
-        try:
+        def _do_view():
+            # One dispatched unit of browser work — see integrations/
+            # browser.py's module docstring.
             page = browser.new_page()
             page.goto("https://www.amazon.in/gp/cart/view.html", wait_until="domcontentloaded")
             page.bring_to_front()
@@ -241,6 +243,9 @@ class ViewCartTool(Tool):
                     "have changed its layout) — take a look at the browser window yourself."
                 )
             return f"Here's what's in your Amazon cart:\n{_format_cart(items)}"
+
+        try:
+            return browser.run_in_browser(_do_view)
         except Exception as e:
             logger.exception("Reading Amazon cart failed")
             return f"Something went wrong reading your Amazon cart: {e}"
@@ -304,7 +309,9 @@ class RemoveFromCartTool(Tool):
         product_url = (product_url or "").strip()
         if not product_name and not product_url:
             return "I need either the product's name or its exact link to know what to remove."
-        try:
+        def _do_remove():
+            # One dispatched unit of browser work — see integrations/
+            # browser.py's module docstring.
             page = browser.new_page()
             page.goto("https://www.amazon.in/gp/cart/view.html", wait_until="domcontentloaded")
             page.bring_to_front()
@@ -351,6 +358,9 @@ class RemoveFromCartTool(Tool):
                     "take a look at the browser window yourself."
                 )
             return f"Removed \"{item['title']}\" from your cart."
+
+        try:
+            return browser.run_in_browser(_do_remove)
         except Exception as e:
             logger.exception("Removing an Amazon cart item failed")
             return f"Something went wrong removing that from your cart: {e}"

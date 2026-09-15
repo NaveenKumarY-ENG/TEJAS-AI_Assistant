@@ -358,12 +358,21 @@ class ShopAmazonTool(Tool):
                 # have changed its layout" — a misleading error for a case
                 # where nothing was actually wrong, the user just wanted to
                 # browse rather than search).
-                page = browser.new_page()
-                page.goto("https://www.amazon.in", wait_until="domcontentloaded")
-                page.bring_to_front()
+                def _open_homepage():
+                    page = browser.new_page()
+                    page.goto("https://www.amazon.in", wait_until="domcontentloaded")
+                    page.bring_to_front()
+
+                # Obtaining the page AND navigating it must run together as
+                # one dispatched unit on the shared browser thread — see
+                # integrations/browser.py's module docstring.
+                browser.run_in_browser(_open_homepage)
                 return "Opened Amazon.in for you — browse in the window, or tell me what to search for."
 
-            outcome = search_products(query, min_price, max_price)
+            # search_products() does its own new_page()/goto()/extraction —
+            # the whole function is the unit of browser work, dispatched
+            # together (same reasoning as _open_homepage above).
+            outcome = browser.run_in_browser(search_products, query, min_price, max_price)
 
             if outcome.get("captcha"):
                 return (
