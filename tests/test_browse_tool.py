@@ -71,6 +71,31 @@ def test_resolve_url_best_effort_dot_coms_a_bare_unknown_word():
     assert resolve_url("cnn") == "https://cnn.com"
 
 
+def test_resolve_url_builds_a_real_google_search_for_a_topic_in_google_phrase():
+    """The actual regression fix for the real, live-reported bug: "open
+    Afgan vs india cricket live in google.com" used to reach open_website
+    with no real URL available, and the model fabricated a plausible-
+    looking but entirely nonexistent article URL instead of asking for a
+    real search — it "successfully" navigated to a 404. A real Google
+    search URL can be built deterministically from the query words alone,
+    with no model guessing (and no chance of a hallucinated URL)
+    involved."""
+    assert (
+        resolve_url("afghan vs india cricket live in google.com")
+        == "https://www.google.com/search?q=afghan+vs+india+cricket+live"
+    )
+    assert resolve_url("weather in bengaluru on google") == "https://www.google.com/search?q=weather+bengaluru"
+    assert resolve_url("google.com cheapest flight to goa") == "https://www.google.com/search?q=cheapest+flight+goa"
+
+
+def test_resolve_url_does_not_build_a_google_search_for_the_bare_google_alias():
+    """"google" / "google maps" alone must still resolve to the real
+    homepage via the exact-alias table, not fall into the search-URL
+    builder (which requires other query words alongside "google")."""
+    assert resolve_url("google") == "https://www.google.com"
+    assert resolve_url("google maps") == "https://maps.google.com"
+
+
 def test_resolve_url_tolerates_a_close_typo_of_a_known_alias():
     """Confirmed live as a real gap: "open flipcart" used to silently
     resolve to the wrong, nonexistent-ish https://flipcart.com instead of

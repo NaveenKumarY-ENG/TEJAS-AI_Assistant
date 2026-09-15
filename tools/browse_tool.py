@@ -75,6 +75,55 @@ def _strip_generic_descriptors(key: str) -> str:
     return " ".join(words) if words else key
 
 
+# Confirmed live as a real, reported bug: "open <topic> live in google.com"
+# (a completely natural way to ask "search this on Google") used to reach
+# open_website with no real URL to give it — and rather than passing the
+# phrase through for a guess, the model fabricated a plausible-looking but
+# entirely nonexistent article URL (e.g.
+# "https://www.example.com/live-cricket-score-afghan-vs-india"), which
+# navigated "successfully" to a 404. A real Google search URL is something
+# code can build deterministically from the query words alone — no model
+# judgment (and no chance of a hallucinated URL) required, so this is
+# checked before the guessing fallbacks below, not left to the model to
+# get right.
+_GOOGLE_WORDS = frozenset(("google", "google.com", "www.google.com"))
+# Includes both mid-phrase connectors ("live IN google.com") and the common
+# command verbs a raw user message (not just a model's distilled tool
+# argument) is wrapped in ("OPEN afghan vs india... in google.com") — see
+# google_search_url_from_text below, which runs this against the user's
+# original message too, as a code-level backstop for when the model
+# fabricates a URL instead of passing anything usable.
+_GOOGLE_SEARCH_CONNECTORS = frozenset(
+    "in on via using search for at open please can could you show me go to visit".split()
+)
+
+
+def _google_search_url(key: str) -> str | None:
+    words = key.split()
+    if not any(w in _GOOGLE_WORDS for w in words):
+        return None
+    query_words = [w for w in words if w not in _GOOGLE_WORDS and w not in _GOOGLE_SEARCH_CONNECTORS]
+    query = " ".join(query_words).strip()
+    if not query:
+        return None
+    return "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
+
+
+def google_search_url_from_text(text: str) -> str | None:
+    """Public wrapper for use outside resolve_url: given ANY free-form
+    text (e.g. the user's raw message for this turn, not just a tool
+    argument), returns a real Google search URL if it mentions
+    "google"/"google.com" alongside other topic words, else None. Used as
+    a code-level override in agent/loop.py: confirmed live that even with
+    resolve_url handling this pattern and the system prompt explicitly
+    telling the model to pass the phrase through, a local model still
+    sometimes fabricates a specific, nonexistent article URL instead —
+    the user's own original wording is the one thing that's always
+    trustworthy here, so it's checked directly rather than relying on
+    whatever argument the model chose to pass."""
+    return _google_search_url((text or "").lower().strip())
+
+
 _ALLOWED_SCHEMES = {"http", "https"}
 
 
@@ -114,6 +163,15 @@ def resolve_url(site: str) -> str:
     # guessing at a TLD.
     if "." in key and " " not in key:
         return f"https://{key}"
+
+    # "<topic> in google.com" / "<topic> on google" / etc. -- a real,
+    # deterministic Google search URL built from the query words
+    # themselves, never a guess at a specific page. See
+    # _google_search_url's comment for why this exists and runs before the
+    # fuzzier fallbacks below.
+    google_url = _google_search_url(key)
+    if google_url:
+        return google_url
 
     # A likely typo of a known site name ("flipcart" for "flipkart",
     # confirmed live as a real gap) -- without this, an unrecognized bare
@@ -164,9 +222,13 @@ class OpenWebsiteTool(Tool):
         "particular search in mind. For searching or shopping on Amazon use shop_amazon, and on "
         "Flipkart use shop_flipkart instead — they run a real search rather than just opening the "
         "homepage. If a prior web_search (or earlier tool result) already returned the real URL for "
-        "what the user's asking about, pass that exact URL here — do not re-describe the site as a "
-        "phrase ('diesel watches official website'); a short name or the real URL resolves far more "
-        "reliably than a guessed-at description."
+        "what the user's asking about, pass that exact URL here rather than re-describing the site "
+        "from scratch. If the user asked to open something 'in google.com' / 'on google' (a topic, "
+        "not a specific known site), pass the request through mostly as-is, e.g. site='afghan vs "
+        "india cricket live in google.com' — this automatically becomes a real Google search URL. "
+        "NEVER invent a specific article/page URL you are not certain is real (e.g. guessing "
+        "'https://.../live-score-...') — an invented URL reliably 404s; use a real known URL, the "
+        "google.com-phrase form above, or call web_search first instead."
     )
     input_schema = {
         "type": "object",
@@ -175,8 +237,9 @@ class OpenWebsiteTool(Tool):
                 "type": "string",
                 "description": (
                     "The website to open — a short name ('flipkart', 'diesel'), a bare domain "
-                    "('example.com'), or a full URL. Not a descriptive phrase — if you already know "
-                    "the real URL (e.g. from a prior web_search result), use that exact URL here."
+                    "('example.com'), a full URL you already know is real (e.g. from a prior "
+                    "web_search result), or 'topic in google.com' to search Google for a topic. "
+                    "Never a made-up specific page URL."
                 ),
             },
         },

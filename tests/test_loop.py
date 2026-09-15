@@ -424,6 +424,49 @@ def test_chat_streaming_only_fires_on_tool_for_calls_actually_executed():
     assert tool_pill_calls == ["open_website"]
 
 
+def test_chat_streaming_overrides_a_hallucinated_url_with_a_real_google_search():
+    """The actual regression test for the real, SECOND live report on this
+    same bug: even with resolve_url able to turn a "<topic> in google.com"
+    phrase into a real Google search URL, and the system prompt telling
+    the model to pass the phrase through, a local model still sometimes
+    ignores both and fabricates its own specific, nonexistent article URL
+    for the site argument (confirmed live:
+    "https://www.example.com/live-cricket-score-afghan-vs-india" for
+    "open Afgan vs india cricket live in google.com") — which
+    "successfully" navigates to a 404 instead of a real page. The user's
+    own original wording said "google.com" for this turn, so that must
+    win over whatever fabricated argument the model chose."""
+
+    def fake_call_llm_streaming(messages, tools):
+        return _fake_tool_call_stream(
+            "open_website", {"site": "https://www.example.com/live-cricket-score-afghan-vs-india"}
+        )
+
+    executed = []
+
+    def fake_execute_tool(name, args):
+        executed.append((name, args))
+        return f"Opened {args['site']} for you in a browser window."
+
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.call_llm_streaming", side_effect=fake_call_llm_streaming
+    ), patch("agent.loop.execute_tool", side_effect=fake_execute_tool):
+        agent = _make_agent()
+        final = agent.chat_streaming(
+            "open Afgan vs india cricket live in google.com", on_chunk=lambda _: None
+        )
+
+    # The model's own fabricated URL never actually reaches execute_tool —
+    # it's replaced with a real Google search built from the user's own
+    # words before the tool ever runs.
+    assert len(executed) == 1
+    assert executed[0][0] == "open_website"
+    assert executed[0][1]["site"] == "https://www.google.com/search?q=afgan+vs+india+cricket+live"
+    assert "example.com" not in final
+
+
 def test_chat_skips_a_repeated_identical_tool_call():
     """Same fix, same regression, for the non-streaming chat()/
     _run_tool_loop twin. With open_website's single-shot limit at 1, the

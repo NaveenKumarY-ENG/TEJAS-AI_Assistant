@@ -19,6 +19,7 @@ from agent.llm_client import call_llm, call_llm_streaming
 from config import config
 from memory import knowledge, structured, vector
 from tools import execute_tool, get_tool_schemas
+from tools.browse_tool import google_search_url_from_text
 
 logger = logging.getLogger("assistant.loop")
 
@@ -222,6 +223,29 @@ def _repeated_tool_call_notice(name: str) -> str:
     )
 
 
+def _apply_open_website_overrides(name: str, args: dict, user_input: str) -> dict:
+    """Confirmed live as a real, still-reachable gap even after resolve_url
+    (tools/browse_tool.py) learned to turn a "<topic> in google.com" PHRASE
+    into a real Google search URL, and the system prompt was told to pass
+    the phrase through instead of guessing: a local model can still ignore
+    both and fabricate a specific, plausible-looking but entirely
+    nonexistent article URL (e.g.
+    "https://www.example.com/live-cricket-score-afghan-vs-india") as the
+    site argument — which "successfully" navigates to a 404 instead of
+    anything real. The one thing that's always trustworthy here is the
+    user's OWN original wording for this turn, independent of whatever the
+    model decided to pass, so when it explicitly said "google"/"google.com"
+    this turn, that always wins over the model's argument — matching this
+    codebase's established pattern of enforcing this kind of thing in code
+    rather than trusting the model to get it right."""
+    if name != "open_website":
+        return args
+    google_url = google_search_url_from_text(user_input)
+    if not google_url:
+        return args
+    return {**args, "site": google_url}
+
+
 class Agent:
     def __init__(self, session_id: int | None = None, resume: bool = False):
         """
@@ -419,7 +443,7 @@ class Agent:
 
         messages, kb_results = self._messages_for_llm(user_input)
         structured_tables = [r["text"] for r in kb_results if knowledge.is_structured_table(r["text"])]
-        final_text, used_volatile_tool = self._run_tool_loop(messages, structured_tables)
+        final_text, used_volatile_tool = self._run_tool_loop(messages, structured_tables, user_input)
 
         # See VOLATILE_TOOLS's comment: a knowledge-base-grounded answer is
         # a snapshot of the documents as they exist right now, and must be
@@ -517,6 +541,7 @@ class Agent:
             for call in tool_calls:
                 fn = call["function"]
                 args = fn.get("arguments", {}) or {}
+                args = _apply_open_website_overrides(fn["name"], args, user_input)
 
                 limit = _SINGLE_SHOT_TOOL_CALL_LIMIT.get(fn["name"])
                 if limit is not None and tool_name_counts.get(fn["name"], 0) >= limit:
@@ -595,7 +620,9 @@ class Agent:
     # Non-streaming tool loop
     # ------------------------------------------------------------------
 
-    def _run_tool_loop(self, messages: list[dict], structured_tables: list[str] | None = None) -> tuple[str, bool]:
+    def _run_tool_loop(
+        self, messages: list[dict], structured_tables: list[str] | None = None, user_input: str = ""
+    ) -> tuple[str, bool]:
         """Returns (final_text, used_volatile_tool) — see VOLATILE_TOOLS."""
         used_volatile_tool = False
         # See _repeated_tool_call_notice's/_SINGLE_SHOT_TOOL_CALL_LIMIT's
@@ -623,6 +650,7 @@ class Agent:
             for call in tool_calls:
                 fn = call["function"]
                 args = fn.get("arguments", {}) or {}
+                args = _apply_open_website_overrides(fn["name"], args, user_input)
 
                 limit = _SINGLE_SHOT_TOOL_CALL_LIMIT.get(fn["name"])
                 if limit is not None and tool_name_counts.get(fn["name"], 0) >= limit:
