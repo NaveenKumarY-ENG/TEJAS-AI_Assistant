@@ -299,7 +299,12 @@ def test_chat_streaming_skips_a_repeated_identical_tool_call():
     the exact same argument 7 more times in a row instead of ever
     replying — burning the whole turn's tool-call budget. The loop must
     detect an exact repeat and stop actually re-executing the tool,
-    regardless of whether the model itself ever stops asking for it."""
+    regardless of whether the model itself ever stops asking for it.
+    With open_website's single-shot limit at 1 (see
+    _SINGLE_SHOT_TOOL_CALL_LIMIT), a repeat of ANY kind — identical or
+    not — now ends the turn immediately with the first real result,
+    rather than waiting for the model to eventually give up and reply on
+    its own."""
     call_count = {"n": 0}
 
     def fake_call_llm_streaming(messages, tools):
@@ -326,12 +331,105 @@ def test_chat_streaming_skips_a_repeated_identical_tool_call():
     # The tool was genuinely EXECUTED only once — the model "asking" for
     # it 3 times must not mean 3 real browser navigations.
     assert executed == [("open_website", {"site": "wikipedia"})]
-    assert "Done!" in final
+    # The turn ends right away with that first real result — never the
+    # model's own later, unnecessary "Done!" reply, and never the generic
+    # tool-call-limit fallback.
+    assert "wikipedia" in final
+    assert "tool-call limit" not in final
+
+
+def test_chat_streaming_ends_the_turn_when_a_single_shot_tool_is_dodge_repeated():
+    """The actual regression test for the real, SECOND live report: even
+    with the exact-repeat dedup above in place, a local model could still
+    dodge it by inventing a DIFFERENT argument on every retry instead of
+    ever replying ("open g-shock" -> tool succeeds -> model calls
+    open_website again with "example.com", out of nowhere) — each call
+    individually looks "new" to a same-(name,args) check, so that guard
+    alone never caught it. open_website must be capped by NAME alone: once
+    it's already run _SINGLE_SHOT_TOOL_CALL_LIMIT times this turn, the turn
+    ends immediately with the last real result — no further calls, no
+    matter what argument the model tries next."""
+    call_count = {"n": 0}
+    sites = ["wikipedia", "example.com", "another-dodge.com", "yet-another.com"]
+
+    def fake_call_llm_streaming(messages, tools):
+        call_count["n"] += 1
+        # A different, never-repeated argument every single time — the
+        # exact shape that dodges the exact-(name, args) dedup.
+        site = sites[min(call_count["n"] - 1, len(sites) - 1)]
+        return _fake_tool_call_stream("open_website", {"site": site})
+
+    executed = []
+
+    def fake_execute_tool(name, args):
+        executed.append((name, args))
+        return f"Opened https://{args['site']} for you in a browser window."
+
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.call_llm_streaming", side_effect=fake_call_llm_streaming
+    ), patch("agent.loop.execute_tool", side_effect=fake_execute_tool):
+        agent = _make_agent()
+        chunks = []
+        final = agent.chat_streaming("open wikipedia", on_chunk=chunks.append)
+
+    # Real executions capped at the configured limit (1) — explicit product
+    # requirement: "open only once and valid once." Even though the model
+    # kept trying with new arguments well past that, only the first (real,
+    # correct) call is ever executed.
+    assert executed == [("open_website", {"site": "wikipedia"})]
+    # The turn ends with the FIRST (and only) real result as the answer —
+    # never a later dodge call's wrong site, and never the generic "I hit
+    # my tool-call limit" fallback.
+    assert "wikipedia" in final
+    assert "example.com" not in final
+    assert "tool-call limit" not in final
+
+
+def test_chat_streaming_only_fires_on_tool_for_calls_actually_executed():
+    """Confirmed live as the real bug behind the ORIGINAL screenshot report
+    (a stack of duplicate "open website" pills in the UI): on_tool used to
+    fire once per tool call the MODEL asked for, before the single-shot
+    cap/dedup logic ever decided whether to actually run it — so even
+    after the backend was fixed to genuinely execute open_website only
+    once, the UI still rendered a pill for every dodge/repeat attempt the
+    model made. on_tool must fire exactly once per call that actually
+    reaches execute_tool, never for one that gets capped or deduped away
+    first."""
+    call_count = {"n": 0}
+    sites = ["wikipedia", "example.com", "another-dodge.com"]
+
+    def fake_call_llm_streaming(messages, tools):
+        call_count["n"] += 1
+        site = sites[min(call_count["n"] - 1, len(sites) - 1)]
+        return _fake_tool_call_stream("open_website", {"site": site})
+
+    def fake_execute_tool(name, args):
+        return f"Opened https://{args['site']} for you in a browser window."
+
+    tool_pill_calls = []
+
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.call_llm_streaming", side_effect=fake_call_llm_streaming
+    ), patch("agent.loop.execute_tool", side_effect=fake_execute_tool):
+        agent = _make_agent()
+        agent.chat_streaming("open wikipedia", on_chunk=lambda _: None, on_tool=tool_pill_calls.append)
+
+    # Exactly one pill, even though the model asked for open_website 3
+    # times in this turn — matches the one real execution, not the three
+    # requests.
+    assert tool_pill_calls == ["open_website"]
 
 
 def test_chat_skips_a_repeated_identical_tool_call():
     """Same fix, same regression, for the non-streaming chat()/
-    _run_tool_loop twin."""
+    _run_tool_loop twin. With open_website's single-shot limit at 1, the
+    turn ends immediately on the repeat with the first real result rather
+    than waiting for the model to eventually reply "Done!" itself — see
+    chat_streaming's identical test for the full story."""
     call_count = {"n": 0}
 
     def fake_call_llm(messages, tools):
@@ -360,7 +458,45 @@ def test_chat_skips_a_repeated_identical_tool_call():
         final = agent.chat("open wikipedia")
 
     assert executed == [("open_website", {"site": "wikipedia"})]
-    assert final == "Done!"
+    assert "wikipedia" in final
+    assert "tool-call limit" not in final
+
+
+def test_chat_ends_the_turn_when_a_single_shot_tool_is_dodge_repeated():
+    """Same fix, same regression, for the non-streaming chat()/
+    _run_tool_loop twin — see chat_streaming's identical test for the
+    full story."""
+    call_count = {"n": 0}
+    sites = ["wikipedia", "example.com", "another-dodge.com", "yet-another.com"]
+
+    def fake_call_llm(messages, tools):
+        call_count["n"] += 1
+        site = sites[min(call_count["n"] - 1, len(sites) - 1)]
+        return {
+            "message": {
+                "content": "",
+                "tool_calls": [{"function": {"name": "open_website", "arguments": {"site": site}}}],
+            }
+        }
+
+    executed = []
+
+    def fake_execute_tool(name, args):
+        executed.append((name, args))
+        return f"Opened https://{args['site']} for you in a browser window."
+
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.vector.recall", return_value=[]), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.call_llm", side_effect=fake_call_llm
+    ), patch("agent.loop.execute_tool", side_effect=fake_execute_tool):
+        agent = _make_agent()
+        final = agent.chat("open wikipedia")
+
+    assert executed == [("open_website", {"site": "wikipedia"})]
+    assert "wikipedia" in final
+    assert "example.com" not in final
+    assert "tool-call limit" not in final
 
 
 def test_chat_streaming_appends_canonical_table_verbatim():

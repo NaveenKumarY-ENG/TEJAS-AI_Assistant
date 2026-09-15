@@ -198,8 +198,24 @@ class OpenWebsiteTool(Tool):
 
         def _do_open():
             page = browser.new_page()
-            page.goto(url, wait_until="domcontentloaded")
+            response = page.goto(url, wait_until="domcontentloaded")
             page.bring_to_front()
+            # Confirmed live as a real, separate gap: a local model can
+            # pass a URL that LOOKS real (a real domain, a plausible-
+            # sounding path it invented, e.g.
+            # "https://www.example.com/live-cricket-score-afghan-vs-india")
+            # but doesn't actually exist — page.goto() doesn't raise for
+            # that, it navigates fine and lands on a 404/error page, so
+            # without this check the tool reported a plain "Opened ... for
+            # you" even though nothing useful actually loaded. response is
+            # None only for a same-document navigation, which never
+            # applies to a fresh page's first goto — guarded anyway since
+            # Playwright's own docs allow it in principle.
+            if response is not None and response.status >= 400:
+                return (
+                    f"Opened {url}, but it returned an error (HTTP {response.status}) — "
+                    "that page doesn't seem to actually exist or work."
+                )
             return f"Opened {url} for you in a browser window."
 
         try:

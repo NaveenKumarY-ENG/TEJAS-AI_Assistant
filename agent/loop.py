@@ -173,6 +173,29 @@ def _tool_call_key(name: str, arguments: dict) -> tuple:
     return (name, tuple(sorted((arguments or {}).items())))
 
 
+_SINGLE_SHOT_TOOL_CALL_LIMIT: dict[str, int] = {
+    # Confirmed live as a real, still-present gap even with the exact-
+    # (name, args) dedup below in place: a local model can dodge that
+    # specific check by inventing a different, sometimes nonsensical
+    # argument on each retry ("open g-shock" -> then, unprompted, "open
+    # example.com") instead of ever stopping to reply — so counting exact
+    # repeats alone wasn't enough, and even allowing exactly 2 real calls
+    # (to leave room for a genuine "open X and Y" dual-site ask) still let
+    # a SECOND, wrong, dodge-argument call through in practice — confirmed
+    # live, the same session that opened the right page correctly on
+    # attempt 1 then opened https://www.example.com on attempt 2 instead
+    # of just replying. Explicit product requirement: "open only once and
+    # valid once." One real call is the limit — a real dual-site request
+    # is rare enough that ending the turn cleanly after the first (correct)
+    # site, rather than risking a second wrong one, is the better default.
+    # Deliberately scoped to open_website specifically, not every tool — a
+    # tool like web_search genuinely can need several different queries in
+    # one turn (comparing options), so a blanket cap on every tool would
+    # be wrong there.
+    "open_website": 1,
+}
+
+
 def _repeated_tool_call_notice(name: str) -> str:
     """Confirmed live as a real, severe, reliably-reproduced failure mode
     — NOT something a system-prompt rule alone fixed, so (matching this
@@ -453,6 +476,14 @@ class Agent:
         # pairs already executed THIS turn so an exact repeat can be
         # caught and short-circuited instead of silently re-run.
         seen_tool_calls: set[tuple] = set()
+        # See _SINGLE_SHOT_TOOL_CALL_LIMIT's docstring — tracks how many
+        # times each tool name has genuinely executed this turn (not
+        # counting skipped exact-repeats), and the last real result each
+        # one produced, so a tool that hits its limit can end the turn
+        # immediately with a real answer instead of looping further.
+        tool_name_counts: dict[str, int] = {}
+        last_result_by_name: dict[str, str] = {}
+        force_ended = False
 
         for iteration in range(config.max_tool_iterations):
             stream = call_llm_streaming(messages, self.tool_schemas)
@@ -486,23 +517,58 @@ class Agent:
             for call in tool_calls:
                 fn = call["function"]
                 args = fn.get("arguments", {}) or {}
-                if on_tool:
-                    on_tool(fn["name"])
+
+                limit = _SINGLE_SHOT_TOOL_CALL_LIMIT.get(fn["name"])
+                if limit is not None and tool_name_counts.get(fn["name"], 0) >= limit:
+                    # Don't call it again, don't just notify-and-hope —
+                    # end the turn right now with the last real result
+                    # this tool already produced. See
+                    # _SINGLE_SHOT_TOOL_CALL_LIMIT's docstring. Deliberately
+                    # skips on_tool here too: confirmed live that firing
+                    # on_tool for every call the MODEL asked for (rather
+                    # than only the ones actually executed) is exactly what
+                    # produced the original reported bug — a stack of
+                    # duplicate "open website" pills in the UI even after
+                    # the backend itself only ever ran the tool once.
+                    final_result = last_result_by_name.get(fn["name"]) or _repeated_tool_call_notice(fn["name"])
+                    logger.warning(
+                        "%s hit its %d-call limit for this turn — ending the turn with its last "
+                        "real result instead of calling it again.",
+                        fn["name"],
+                        limit,
+                    )
+                    if on_tool_result:
+                        on_tool_result(fn["name"], final_result)
+                    on_chunk(final_result)
+                    full_text = final_result
+                    self._record("assistant", final_result)
+                    force_ended = True
+                    break
+
                 call_key = _tool_call_key(fn["name"], args)
                 if call_key in seen_tool_calls:
                     logger.warning("Skipping a repeated identical tool call: %s(%s)", fn["name"], args)
                     result = _repeated_tool_call_notice(fn["name"])
                 else:
+                    # on_tool fires only for a call that's actually about to
+                    # run — not once per call the model merely asked for —
+                    # so the UI's tool-call pills reflect real executions
+                    # one-to-one, never a duplicate for a request that was
+                    # capped or deduped away before it ever ran.
+                    if on_tool:
+                        on_tool(fn["name"])
                     seen_tool_calls.add(call_key)
+                    tool_name_counts[fn["name"]] = tool_name_counts.get(fn["name"], 0) + 1
+                    last_result_by_name[fn["name"]] = result = execute_tool(fn["name"], args)
                     if fn["name"] in VOLATILE_TOOLS:
                         used_volatile_tool = True
-                    logger.debug("Tool %s(%s)", fn["name"], args)
-                    result = execute_tool(fn["name"], args)
-                    logger.debug("Tool %s -> %s", fn["name"], str(result)[:200])
+                    logger.debug("Tool %s(%s) -> %s", fn["name"], args, str(result)[:200])
                 if on_tool_result:
                     on_tool_result(fn["name"], result)
                 self._record("tool", result, name=fn["name"])
 
+            if force_ended:
+                break
             messages = list(self.history)
         else:
             # Loop exhausted without breaking - hit the iteration cap.
@@ -532,9 +598,11 @@ class Agent:
     def _run_tool_loop(self, messages: list[dict], structured_tables: list[str] | None = None) -> tuple[str, bool]:
         """Returns (final_text, used_volatile_tool) — see VOLATILE_TOOLS."""
         used_volatile_tool = False
-        # See _repeated_tool_call_notice's docstring — same fix as
-        # chat_streaming's identical loop.
+        # See _repeated_tool_call_notice's/_SINGLE_SHOT_TOOL_CALL_LIMIT's
+        # docstrings — same fix as chat_streaming's identical loop.
         seen_tool_calls: set[tuple] = set()
+        tool_name_counts: dict[str, int] = {}
+        last_result_by_name: dict[str, str] = {}
 
         for iteration in range(config.max_tool_iterations):
             response = call_llm(messages, self.tool_schemas)
@@ -555,17 +623,30 @@ class Agent:
             for call in tool_calls:
                 fn = call["function"]
                 args = fn.get("arguments", {}) or {}
+
+                limit = _SINGLE_SHOT_TOOL_CALL_LIMIT.get(fn["name"])
+                if limit is not None and tool_name_counts.get(fn["name"], 0) >= limit:
+                    final_result = last_result_by_name.get(fn["name"]) or _repeated_tool_call_notice(fn["name"])
+                    logger.warning(
+                        "%s hit its %d-call limit for this turn — ending the turn with its last "
+                        "real result instead of calling it again.",
+                        fn["name"],
+                        limit,
+                    )
+                    self._record("assistant", final_result)
+                    return final_result.strip(), used_volatile_tool
+
                 call_key = _tool_call_key(fn["name"], args)
                 if call_key in seen_tool_calls:
                     logger.warning("Skipping a repeated identical tool call: %s(%s)", fn["name"], args)
                     result = _repeated_tool_call_notice(fn["name"])
                 else:
                     seen_tool_calls.add(call_key)
+                    tool_name_counts[fn["name"]] = tool_name_counts.get(fn["name"], 0) + 1
+                    last_result_by_name[fn["name"]] = result = execute_tool(fn["name"], args)
                     if fn["name"] in VOLATILE_TOOLS:
                         used_volatile_tool = True
-                    logger.debug("Tool %s(%s)", fn["name"], args)
-                    result = execute_tool(fn["name"], args)
-                    logger.debug("Tool %s -> %s", fn["name"], str(result)[:200])
+                    logger.debug("Tool %s(%s) -> %s", fn["name"], args, str(result)[:200])
                 self._record("tool", result, name=fn["name"])
 
             messages = list(self.history)

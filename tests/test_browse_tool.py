@@ -17,12 +17,19 @@ from tools import browse_tool
 from tools.browse_tool import InvalidWebsite, OpenWebsiteTool, resolve_url
 
 
+class FakeResponse:
+    def __init__(self, status):
+        self.status = status
+
+
 class FakePage:
-    def __init__(self):
+    def __init__(self, status=200):
         self.url = None
+        self._status = status
 
     def goto(self, url, wait_until=None):
         self.url = url
+        return FakeResponse(self._status)
 
     def bring_to_front(self):
         pass
@@ -167,3 +174,21 @@ def test_run_surfaces_navigation_errors_instead_of_raising():
     ), patch.object(browse_tool.browser, "get_context", return_value=FakeContext(BrokenPage())):
         result = OpenWebsiteTool().run(site="example.com")
     assert "Something went wrong" in result
+
+
+def test_run_reports_an_error_page_instead_of_claiming_success():
+    """Confirmed live as a real, separate gap from the crash case above: a
+    local model can pass a URL that looks real (a real domain, a
+    plausible-sounding invented path) but doesn't actually exist —
+    page.goto() doesn't raise for that, it navigates fine and lands on a
+    404/error page, so this must be caught and reported honestly rather
+    than telling the user "Opened ... for you" for a page that doesn't
+    actually work."""
+    page = FakePage(status=404)
+    with patch.object(browse_tool.config, "live_ai_enabled", True), patch.object(
+        browse_tool.browser, "available", return_value=True
+    ), patch.object(browse_tool.browser, "get_context", return_value=FakeContext(page)):
+        result = OpenWebsiteTool().run(site="https://www.example.com/made-up-path")
+    assert "404" in result
+    assert "error" in result.lower()
+    assert "for you in a browser window" not in result
