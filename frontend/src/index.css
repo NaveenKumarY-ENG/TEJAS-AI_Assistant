@@ -86,6 +86,316 @@ body {
   100% { transform: scale(2.1); opacity: 0; }
 }
 
+/* Home hero header (HeroHeader.tsx) — a cinematic deep-space scene (planet
+   + ring + nebula + starfield + mountains): no image asset, composited
+   from CSS gradients/masks plus two inline SVG pieces (a feTurbulence
+   "terrain" texture on the planet, and a bezier-path mountain ridge —
+   see their own comments below for why plain CSS gradients/clip-path
+   weren't enough for those two specifically), styled after a reference
+   deep-space illustration. */
+@keyframes hero-twinkle {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.85; }
+}
+
+.hero {
+  background: #020207;
+}
+
+/* Sky + nebula wash — deep indigo/black base (the reference's dominant
+   tone), with pink/violet kept as localized ACCENTS (left-edge nebula,
+   near the ring) rather than washed across the whole card like a first
+   pass did. */
+.hero-glow {
+  background:
+    radial-gradient(30% 90% at 2% 50%, color-mix(in srgb, #ff5ec4 26%, transparent) 0%, transparent 60%),
+    radial-gradient(55% 120% at 92% 8%, color-mix(in srgb, #5a7dff 42%, transparent) 0%, transparent 62%),
+    radial-gradient(40% 90% at 78% 30%, color-mix(in srgb, var(--color-accent) 26%, transparent) 0%, transparent 65%),
+    linear-gradient(200deg, transparent 40%, rgba(150, 180, 255, 0.05) 48%, rgba(190, 205, 255, 0.07) 52%, transparent 62%),
+    linear-gradient(160deg, #0a0c1c 0%, #050614 20%, #030309 55%, #020207 100%);
+}
+
+/* The planet disc — a lit sphere peeking in from the top-right corner,
+   partially cropped by the card's own edge (overflow-hidden on .hero),
+   echoing the reference's half-visible planet. Confirmed live as a real
+   gap from a first pass: an inset-shadow rim alone (a thin bright edge
+   over an otherwise dark disc) reads as "the planet is just black" — the
+   reference's planet is genuinely LIT across most of its visible face.
+   This is now a real directional light-falloff gradient (bright at the
+   light-facing corner, dark only at the far opposite corner), which is
+   what actually makes a flat circle read as a lit sphere; the inset
+   shadows on top just sharpen the limb, they're no longer doing all the
+   work alone. */
+/* top/light-center note: the card only shows roughly the BOTTOM 60-65% of
+   this 220px circle (the rest is cropped above the card edge) — confirmed
+   live as the actual bug behind "the planet is just black": the light
+   source was positioned near the circle's geometric top, which is exactly
+   the part getting cropped off, so only the gradient's dim outer rings
+   were ever visible. The light center below is deliberately placed lower
+   (34% down the full circle) so the bright core actually falls inside the
+   visible window instead of just past its edge. */
+.hero-planet {
+  top: -34px;
+  right: 5%;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background:
+    radial-gradient(140% 140% at 30% 34%, #f4f8ff 0%, #cfe0ff 10%, #93b3f5 24%, #5d80d9 40%, #37489f 56%, #1c2461 72%, #0b0d34 88%, #05061a 100%);
+  box-shadow:
+    inset -8px -6px 18px 2px rgba(255, 255, 255, 0.55),
+    inset 24px 22px 50px 8px rgba(0, 0, 0, 0.55),
+    0 0 55px 6px color-mix(in srgb, #6f8fff 45%, transparent),
+    0 0 120px 28px color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+/* Procedural "continents" texture over the lit hemisphere above — real
+   per-pixel fractal noise (feTurbulence), shaped/darkened via
+   feColorMatrix and composited with mix-blend-mode so it mottles the
+   gradient underneath rather than sitting as a flat layer on top of it.
+   Zero external image, same circle position/size as .hero-planet. */
+.hero-planet-texture {
+  top: -34px;
+  right: 5%;
+  width: 220px;
+  height: 220px;
+  mix-blend-mode: overlay;
+  opacity: 0.55;
+}
+
+/* A small second moon, lower-left of the planet — same curved-rim trick
+   at a smaller scale, purely decorative depth/detail from the reference. */
+.hero-moon {
+  top: 58px;
+  right: 22%;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 65% 70%, #050510 0%, #0a0b1c 70%, #0d0f22 100%);
+  box-shadow:
+    inset -4px -3px 8px 1px rgba(220, 230, 255, 0.55),
+    0 0 18px 2px color-mix(in srgb, #6f8fff 35%, transparent);
+  opacity: 0.85;
+}
+
+/* The wide glowing ring arcing past the planet, built as two layers for a
+   real neon-tube glow rather than a single flat line: a blurred, wider,
+   more saturated halo underneath, and a crisp bright core on top. Both
+   use the same gradient-border-via-mask ellipse technique. */
+.hero-ring-glow,
+.hero-ring {
+  top: 12px;
+  right: -8%;
+  width: 400px;
+  height: 118px;
+  border-radius: 50%;
+  transform: rotate(-15deg);
+  background: linear-gradient(100deg, rgba(255, 255, 255, 0.9) 0%, color-mix(in srgb, #8fb4ff 90%, transparent) 30%, color-mix(in srgb, var(--color-accent) 90%, transparent) 60%, color-mix(in srgb, #ff8fd4 85%, transparent) 100%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+}
+
+.hero-ring-glow {
+  filter: blur(9px);
+  opacity: 0.85;
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 9px), #000 calc(100% - 9px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 9px), #000 calc(100% - 9px));
+}
+
+.hero-ring {
+  opacity: 1;
+  filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.5)) drop-shadow(0 0 18px color-mix(in srgb, var(--color-accent) 65%, transparent));
+}
+
+/* A handful of star dots plus brighter "glint" stars, tiled across a small
+   tile so the pattern reads as a starfield without a real image. */
+.hero-starfield {
+  opacity: 0.8;
+  background-image:
+    radial-gradient(1.5px 1.5px at 12% 60%, #fff, transparent),
+    radial-gradient(2px 2px at 70% 20%, #fff, transparent),
+    radial-gradient(2px 2px at 4% 15%, #fff, transparent),
+    radial-gradient(1px 1px at 10% 20%, #fff, transparent),
+    radial-gradient(1px 1px at 32% 62%, #fff, transparent),
+    radial-gradient(1.5px 1.5px at 58% 15%, #fff, transparent),
+    radial-gradient(1px 1px at 74% 48%, #fff, transparent),
+    radial-gradient(1px 1px at 88% 78%, #fff, transparent),
+    radial-gradient(1.5px 1.5px at 22% 88%, #fff, transparent),
+    radial-gradient(1px 1px at 46% 38%, #fff, transparent),
+    radial-gradient(1px 1px at 96% 25%, #fff, transparent),
+    radial-gradient(1px 1px at 40% 10%, #fff, transparent);
+  background-repeat: repeat;
+  background-size: 260px 180px;
+  animation: hero-twinkle 6s ease-in-out infinite;
+}
+
+/* Meteors — a single rotated gradient line (bright at the "head" end,
+   fading to transparent at the "tail"), animated with rotate() THEN
+   translateX(): rotating first tilts the element's own coordinate axes,
+   so the later translateX moves it along that new diagonal direction
+   instead of straight sideways — a well-known CSS shooting-star trick
+   that needs no separate trail element or path math. Each instance's
+   start position/timing is set inline in HeroHeader.tsx (one-off per
+   instance values, not worth their own classes); this shared keyframe
+   just handles the fade-in/streak/fade-out envelope. */
+@keyframes hero-meteor-fall {
+  0% { transform: rotate(35deg) translateX(0); opacity: 0; }
+  5% { opacity: 1; }
+  24% { opacity: 1; }
+  34% { opacity: 0; }
+  100% { transform: rotate(35deg) translateX(-230px); opacity: 0; }
+}
+
+.hero-meteor {
+  width: 64px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9));
+  box-shadow: 0 0 6px 1px rgba(200, 220, 255, 0.6);
+  opacity: 0;
+  transform-origin: right center;
+  animation-name: hero-meteor-fall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+/* The comet — same rotate()+translateX() technique as a meteor, just
+   bigger, brighter, slower, and traveling a much longer path (it crosses
+   most of the card's width) with a distinct glowing head. */
+@keyframes hero-comet-fly {
+  0% { transform: rotate(12deg) translateX(0); opacity: 0; }
+  6% { opacity: 1; }
+  72% { opacity: 1; }
+  88% { opacity: 0; }
+  100% { transform: rotate(12deg) translateX(1200px); opacity: 0; }
+}
+
+.hero-comet {
+  width: 120px;
+  height: 3px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, transparent, rgba(180, 205, 255, 0.5) 55%, #eaf1ff 100%);
+  box-shadow: 0 0 14px 2px color-mix(in srgb, #8fb4ff 55%, transparent);
+  opacity: 0;
+  transform-origin: right center;
+  animation: hero-comet-fly 15s linear infinite;
+}
+
+.hero-comet::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translateY(-50%);
+  box-shadow:
+    0 0 12px 3px rgba(255, 255, 255, 0.9),
+    0 0 26px 8px color-mix(in srgb, #8fb4ff 55%, transparent);
+}
+
+/* Glowing clouds along the bottom, where the mountains used to sit —
+   soft blurred violet/blue blobs (layered radial-gradients + a blur
+   filter), each slowly breathing in brightness on its own cycle. */
+@keyframes hero-cloud-pulse {
+  0%, 100% { opacity: 0.58; }
+  50% { opacity: 0.92; }
+}
+
+.hero-cloud {
+  bottom: -25px;
+  width: 260px;
+  height: 130px;
+  border-radius: 50%;
+  filter: blur(16px);
+  animation: hero-cloud-pulse 8s ease-in-out infinite;
+}
+
+.hero-cloud--a {
+  left: 2%;
+  background:
+    radial-gradient(60% 70% at 40% 50%, color-mix(in srgb, var(--color-accent) 75%, transparent) 0%, transparent 72%),
+    radial-gradient(50% 60% at 65% 55%, color-mix(in srgb, var(--color-primary) 65%, transparent) 0%, transparent 72%);
+}
+
+.hero-cloud--b {
+  right: 32%;
+  width: 220px;
+  height: 110px;
+  background:
+    radial-gradient(55% 65% at 45% 50%, color-mix(in srgb, #6f8fff 70%, transparent) 0%, transparent 72%),
+    radial-gradient(45% 55% at 60% 50%, color-mix(in srgb, var(--color-accent) 60%, transparent) 0%, transparent 72%);
+  animation-delay: 3s;
+}
+
+/* Lightning "generated from the clouds" — a soft radial flash plus a
+   jagged bolt shape, both mostly invisible and flickering briefly near
+   the end of a longer cycle (a quick double-flash reads as lightning
+   much better than one long fade). The --a pair and --b pair share their
+   own animation-delay/duration so each cloud's flash and bolt fire
+   together, but the two clouds don't flash in sync with each other. */
+@keyframes hero-lightning-flicker {
+  0%, 92%, 100% { opacity: 0; }
+  93% { opacity: 0.9; }
+  94% { opacity: 0.15; }
+  95% { opacity: 0.75; }
+  96% { opacity: 0; }
+}
+
+.hero-lightning-flash {
+  width: 200px;
+  height: 140px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(230, 240, 255, 0.9) 0%, rgba(180, 200, 255, 0.35) 32%, transparent 70%);
+  animation: hero-lightning-flicker 7s ease-in-out infinite;
+}
+
+.hero-lightning-flash--a {
+  bottom: -20px;
+  left: 4%;
+  animation-delay: 1.2s;
+}
+
+.hero-lightning-flash--b {
+  bottom: -10px;
+  right: 30%;
+  animation-delay: 4.6s;
+  animation-duration: 9s;
+}
+
+.hero-lightning-bolt {
+  width: 26px;
+  height: 50px;
+  filter: drop-shadow(0 0 6px rgba(210, 225, 255, 0.9));
+  animation: hero-lightning-flicker 7s ease-in-out infinite;
+}
+
+.hero-lightning-bolt--a {
+  bottom: 4px;
+  left: 11%;
+  animation-delay: 1.2s;
+}
+
+.hero-lightning-bolt--b {
+  bottom: 6px;
+  right: 34%;
+  animation-delay: 4.6s;
+  animation-duration: 9s;
+}
+
+/* Dark scrim so text stays readable over the glow/planet/ring/starfield —
+   lighter than a first pass so the brighter palette above still reads as
+   a visible glow rather than being smothered back to flat black. */
+.hero-scrim {
+  background: linear-gradient(180deg, rgba(2, 2, 7, 0.15) 0%, rgba(2, 2, 6, 0.32) 55%, rgba(2, 2, 6, 0.72) 100%);
+}
+
+.hero-dot-online {
+  animation: mic-pulse 2.2s ease-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
