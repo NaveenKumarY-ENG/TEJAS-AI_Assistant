@@ -11,10 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.loop import (
     Agent,
+    _extract_search_quick_answer,
     _is_cart_request_query,
     _is_explicit_web_query,
     _is_knowledge_listing_query,
     _is_reminder_query,
+    _is_translation_query,
     _is_volatile_query,
     _repeated_tool_call_notice,
     _tool_call_key,
@@ -262,6 +264,144 @@ def test_messages_for_llm_omits_cart_directive_for_unrelated_messages():
         agent = _make_agent()
         messages, _ = agent._messages_for_llm("what's the weather like today")
     assert "order_amazon" not in messages[-1]["content"]
+
+
+def test_is_translation_query_detects_real_reported_phrasings():
+    """Confirmed live as a real, reported bug: "what is apple called in
+    kannada" led a 7B local model to answer with a completely fabricated
+    Kannada word from memory, with no tool call at all."""
+    assert _is_translation_query("what is apple called in kannada")
+    assert _is_translation_query("what is banana called in Kannada")
+    assert _is_translation_query("translate 'hello' into French")
+    assert _is_translation_query("how do you say thank you in Japanese")
+    assert _is_translation_query("what's the meaning of apple in Hindi")
+
+
+def test_is_translation_query_ignores_unrelated_questions():
+    assert not _is_translation_query("what's the weather like today")
+    assert not _is_translation_query("what is an apple")
+    assert not _is_translation_query("what is 2+2")
+
+
+def test_messages_for_llm_proactively_runs_web_search_for_a_translation_query():
+    """The actual regression test for the real, live-reported bug: even
+    with an explicit "translations must call web_search" system-prompt
+    rule in place, a 7B local model still never called the tool, and for
+    a genuinely new word produced another wrong, fabricated translation —
+    while falsely claiming it had "just checked live dictionary sources."
+    Same fix shape already proven for knowledge-base search above: don't
+    ask the model to call the tool, run it for real right here."""
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.structured.reminder_listing", return_value=""
+    ), patch(
+        "agent.loop.execute_tool", return_value="Quick answer: apple is ಸೇಬು (sēbu) in Kannada."
+    ) as mock_execute:
+        agent = _make_agent()
+        messages, _ = agent._messages_for_llm("what is apple called in kannada")
+    mock_execute.assert_called_once_with("web_search", {"query": "what is apple called in kannada"})
+    assert "ಸೇಬು" in messages[-1]["content"]
+    assert "do NOT call web_search again" in messages[-1]["content"]
+    assert agent._last_proactive_web_search == (
+        "web_search",
+        "Quick answer: apple is ಸೇಬು (sēbu) in Kannada.",
+    )
+
+
+def test_messages_for_llm_skips_proactive_translation_search_for_unrelated_messages():
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.structured.reminder_listing", return_value=""
+    ), patch("agent.loop.execute_tool") as mock_execute:
+        agent = _make_agent()
+        messages, _ = agent._messages_for_llm("what's the weather like today")
+    mock_execute.assert_not_called()
+    assert agent._last_proactive_web_search is None
+
+
+def test_chat_streaming_fires_on_tool_for_a_proactive_translation_search():
+    """Same real-tool-call-without-asking-the-model treatment already
+    proven for search_knowledge (see the kb_results test above) — the UI's
+    tool pill must reflect this real web_search call too, even though the
+    model itself never requested it."""
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.structured.reminder_listing", return_value=""), patch(
+        "agent.loop.vector.recall", return_value=[]
+    ), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.execute_tool", return_value="Quick answer: apple is ಸೇಬು (sēbu) in Kannada."
+    ), patch(
+        "agent.loop.call_llm_streaming", side_effect=lambda messages, tools: _fake_stream("It's ಸೇಬು.")
+    ):
+        agent = _make_agent()
+        tool_pills = []
+        tool_results = []
+        agent.chat_streaming(
+            "what is apple called in kannada",
+            on_chunk=lambda _: None,
+            on_tool=tool_pills.append,
+            on_tool_result=lambda name, result: tool_results.append((name, result)),
+        )
+    assert tool_pills == ["web_search"]
+    assert tool_results == [("web_search", "Quick answer: apple is ಸೇಬು (sēbu) in Kannada.")]
+
+
+def test_extract_search_quick_answer_pulls_the_quick_answer_line():
+    result = (
+        "Quick answer: In Kannada, banana is called \"ಬಾಳೆಹಣ್ಣು\" (Bāḷehaṇṇu).\n"
+        "- How to say banana in Kannada: ... (https://example.com)"
+    )
+    assert _extract_search_quick_answer(result) == 'In Kannada, banana is called "ಬಾಳೆಹಣ್ಣು" (Bāḷehaṇṇu).'
+
+
+def test_extract_search_quick_answer_returns_none_without_one():
+    assert _extract_search_quick_answer("No results found.") is None
+    assert _extract_search_quick_answer("- some bullet result (https://example.com)") is None
+
+
+def test_messages_for_llm_sets_translation_appendix_when_search_has_a_quick_answer():
+    """The actual regression test for the real, SEVERE failure mode found
+    live: even with the correct translation placed directly in context and
+    an explicit "answer using ONLY this result" instruction, a 7B local
+    model still substituted its own wrong guess for a second word and
+    falsely claimed to have verified it. The real answer must be captured
+    here so it can be appended verbatim later (same fix shape as
+    structured document tables) — never left to the model to relay."""
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.structured.reminder_listing", return_value=""
+    ), patch(
+        "agent.loop.execute_tool",
+        return_value='Quick answer: In Kannada, banana is called "ಬಾಳೆಹಣ್ಣು" (Bāḷehaṇṇu).',
+    ):
+        agent = _make_agent()
+        messages, _ = agent._messages_for_llm("what is banana called in kannada")
+    assert agent._translation_appendix == '**Verified translation:** In Kannada, banana is called "ಬಾಳೆಹಣ್ಣು" (Bāḷehaṇṇu).'
+    # The model is told not to write out the translation itself, since the
+    # real one is appended automatically.
+    assert "do NOT write out the specific translated word" in messages[-1]["content"]
+
+
+def test_chat_streaming_appends_the_real_translation_regardless_of_what_the_model_says():
+    """The core regression test: the fake model here deliberately answers
+    with a WRONG, fabricated translation (mirroring "ಬಾನಾನ" for banana,
+    confirmed live) — the final text the user actually sees must still
+    contain the REAL, verified one appended after it, exactly like a
+    structured document table survives a model that tries to retype it
+    wrong."""
+    with patch("agent.loop.knowledge.search", return_value=[]), patch(
+        "agent.loop.knowledge.document_listing", return_value=""
+    ), patch("agent.loop.structured.reminder_listing", return_value=""), patch(
+        "agent.loop.vector.recall", return_value=[]
+    ), patch("agent.loop.vector.remember"), patch(
+        "agent.loop.execute_tool",
+        return_value='Quick answer: In Kannada, banana is called "ಬಾಳೆಹಣ್ಣು" (Bāḷehaṇṇu).',
+    ), patch(
+        "agent.loop.call_llm_streaming",
+        side_effect=lambda messages, tools: _fake_stream(
+            'Just checked live dictionary sources: Banana is called "ಬಾನಾನ" (bānāna) in Kannada.'
+        ),
+    ):
+        agent = _make_agent()
+        final = agent.chat_streaming("what is banana called in kannada", on_chunk=lambda _: None)
+    assert "ಬಾಳೆಹಣ್ಣು" in final
 
 
 def test_tool_call_key_is_order_independent_and_distinguishes_arguments():

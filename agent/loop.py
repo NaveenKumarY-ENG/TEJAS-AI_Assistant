@@ -165,6 +165,54 @@ def _is_explicit_web_query(text: str) -> bool:
     return bool(_EXPLICIT_WEB_QUERY_RE.search(text))
 
 
+# Confirmed live as a real, severe failure mode — and confirmed NOT fixable
+# with a system-prompt rule alone, even an unconditional one with a worked
+# example: asked "what is apple called in kannada," a 7B local model
+# answered with a completely fabricated word from memory (no tool call at
+# all). Adding an explicit "translation requests must call web_search"
+# system-prompt rule did not fix this — re-tested live afterward, the model
+# still never called the tool, and for a genuinely new word ("banana") it
+# produced ANOTHER wrong made-up translation, this time while literally
+# claiming "Just checked live dictionary sources" it never actually
+# consulted — a local model just doesn't reliably act on an instruction
+# buried in a rarely-re-attended-to system prompt, the exact same class of
+# gap knowledge.search() below was already fixed for (see its own
+# docstring). The fix is the same one already proven here: don't ask the
+# model to call the tool at all — run it proactively, unconditionally,
+# whenever the user's own words are shaped like a translation request, and
+# feed the real result straight into context.
+_TRANSLATION_QUERY_RE = re.compile(
+    r"\bwhat\s+is\b.{0,60}\bcalled\s+in\b"
+    r"|\btranslate\b.{0,60}\b(?:to|into)\b"
+    r"|\bhow\s+(?:do\s+you|do\s+i|to)\s+say\b.{0,60}\bin\b"
+    r"|\bmeaning\s+of\b.{0,60}\bin\s+\w",
+    re.IGNORECASE,
+)
+
+
+def _is_translation_query(text: str) -> bool:
+    return bool(_TRANSLATION_QUERY_RE.search(text))
+
+
+def _extract_search_quick_answer(search_result: str) -> str | None:
+    """Pulls Tavily's own "Quick answer: ..." line out of a raw web_search
+    result. Confirmed live as a real, SEVERE failure mode, worse than just
+    "didn't call the tool": even with the real, correct translation placed
+    directly in context and an explicit "answer using ONLY this result"
+    instruction, a 7B local model still substituted its own wrong guess
+    for a second word ("banana") and, again, falsely claimed to have
+    checked a live source. The model cannot be trusted to relay this
+    correctly even when handed the right answer, so — same fix shape
+    already proven for structured document tables (see
+    knowledge.is_structured_table's docstring) — the real answer gets
+    appended verbatim after whatever the model writes, rather than trusted
+    to survive the model repeating it."""
+    for line in search_result.splitlines():
+        if line.startswith("Quick answer: "):
+            return line[len("Quick answer: "):].strip()
+    return None
+
+
 def _tool_call_key(name: str, arguments: dict) -> tuple:
     """A hashable fingerprint for "this exact tool call, with these exact
     arguments" — every tool in this codebase takes a flat dict of
@@ -273,6 +321,18 @@ class Agent:
             self.history: list[dict] = []
             logger.info("Started new session %d", self.session_id)
 
+        # Set by _messages_for_llm when it proactively ran web_search itself
+        # (see _is_translation_query's comment) — read right back out by
+        # chat_streaming to fire the same on_tool/on_tool_result UI events a
+        # real model-requested call would, even though nothing "called" it
+        # this turn. None on every other turn.
+        self._last_proactive_web_search: tuple[str, str] | None = None
+        # See _extract_search_quick_answer's docstring — the real, verified
+        # translation, appended verbatim after the model's reply via the
+        # same structured_tables mechanism chat()/chat_streaming() already
+        # use for document tables. None on every other turn.
+        self._translation_appendix: str | None = None
+
     # ------------------------------------------------------------------
     # History management
     # ------------------------------------------------------------------
@@ -322,7 +382,12 @@ class Agent:
 
         Also returns the raw knowledge-base results (possibly []), so
         chat_streaming can fire on_tool/on_tool_result for the citation UI
-        even though nothing "called" search_knowledge this turn.
+        even though nothing "called" search_knowledge this turn. A
+        translation-shaped query gets the same real-tool-call-without-
+        asking-the-model treatment (see _is_translation_query) — its result
+        is left on self._last_proactive_web_search instead of the return
+        tuple, since only chat_streaming (not the non-streaming chat())
+        needs it for the matching on_tool/on_tool_result UI events.
 
         Knowledge-base search runs every turn by default, exactly like
         vector.recall() below — not left to the model to decide whether to
@@ -418,6 +483,40 @@ class Agent:
                     "correct from the table."
                 )
 
+        self._last_proactive_web_search = None
+        self._translation_appendix = None
+        if _is_translation_query(user_input) and not explicit_web_query:
+            # See _TRANSLATION_QUERY_RE's comment — run for real, right here,
+            # rather than asking the model to call web_search itself.
+            result = execute_tool("web_search", {"query": user_input})
+            self._last_proactive_web_search = ("web_search", result)
+            quick_answer = _extract_search_quick_answer(result)
+            if quick_answer:
+                # See _extract_search_quick_answer's docstring — the real
+                # answer is appended verbatim after the model's reply
+                # (structured_tables mechanism, reused below in chat()/
+                # chat_streaming()), not trusted to survive the model
+                # repeating it.
+                self._translation_appendix = f"**Verified translation:** {quick_answer}"
+                parts.append(
+                    "Real, live web search results for this translation request (already run "
+                    "for you — do NOT call web_search again this turn):\n" + result + "\n\nThe "
+                    "real, verified translation will be shown automatically right after your "
+                    "reply — do NOT write out the specific translated word/phrase yourself, in "
+                    "any form. Reply with only a short intro sentence (e.g. 'Here's what I "
+                    "found:') and then stop generating."
+                )
+            else:
+                parts.append(
+                    "Real, live web search results for this translation request (already run "
+                    "for you — do NOT call web_search again this turn):\n" + result + "\n\nAnswer "
+                    "using ONLY the word/translation shown in these results, even if a different "
+                    "one comes to mind from your own training. If the results above don't "
+                    "clearly show a translation, say plainly that you couldn't verify one rather "
+                    "than guessing or claiming you checked something you didn't."
+                )
+            logger.debug("Proactively ran web_search for a translation-shaped query")
+
         recalled = vector.recall(user_input, n_results=3)
         if recalled:
             parts.append(
@@ -443,6 +542,8 @@ class Agent:
 
         messages, kb_results = self._messages_for_llm(user_input)
         structured_tables = [r["text"] for r in kb_results if knowledge.is_structured_table(r["text"])]
+        if self._translation_appendix:
+            structured_tables.append(self._translation_appendix)
         final_text, used_volatile_tool = self._run_tool_loop(messages, structured_tables, user_input)
 
         # See VOLATILE_TOOLS's comment: a knowledge-base-grounded answer is
@@ -485,6 +586,8 @@ class Agent:
         # instruction-following unreliability already seen with tool-calling,
         # fixed the same way: don't leave it to the model at all.
         structured_tables = [r["text"] for r in kb_results if knowledge.is_structured_table(r["text"])]
+        if self._translation_appendix:
+            structured_tables.append(self._translation_appendix)
         if kb_results:
             # Fires the same UI events a real search_knowledge tool call
             # would (tool pill + citation caption) even though nothing
@@ -494,6 +597,15 @@ class Agent:
                 on_tool("search_knowledge")
             if on_tool_result:
                 on_tool_result("search_knowledge", knowledge.format_search_results(kb_results))
+        if self._last_proactive_web_search:
+            # Same treatment for the translation-query web_search above —
+            # real tool call, model just never asked for it, so fire the
+            # same UI events a model-requested call would.
+            name, result = self._last_proactive_web_search
+            if on_tool:
+                on_tool(name)
+            if on_tool_result:
+                on_tool_result(name, result)
         full_text = ""
         used_volatile_tool = False
         # See _repeated_tool_call_notice's docstring — tracks (name, args)
